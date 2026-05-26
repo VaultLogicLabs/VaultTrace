@@ -1,198 +1,218 @@
 const apiKey = process.env.HELIUS_API_KEY;
 const url = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`;
 
-const snipedTokenAccount = "4XRaaCBRjNKHTSatXXxKgQqkE4nSePkiKrL5pHsvvf7r";
-const tokenMintAddress   = "7sGdNQSvUGpahh6qyXB3g5gsdK9FAzZM299KyCXspump";
+const ownerWallet      = "9UcaW8ncMSBWEp597FAZbuydAWtqojVs47EnSpSKrtPV";
+const tokenMintAddress = "7sGdNQSvUGpahh6qyXB3g5gsdK9FAzZM299KyCXspump";
+// The first token-account transaction was at this time — scan owner activity here
+const SEED_DATE_STR    = "2025-12-17";
 
-const KNOWN_PROGRAMS = {
+const KNOWN = {
   "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "Pump.fun Program",
-  "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM": "Pump.fun Fee Wallet",
-  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA":  "SPL Token Program",
+  "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM": "Pump.fun Fee",
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA":  "SPL Token",
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bRS": "ATA Program",
   "11111111111111111111111111111111":               "System Program",
-  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bRS": "Associated Token Program",
   "ComputeBudget111111111111111111111111111111111": "Compute Budget",
+  "SysvarRent111111111111111111111111111111111111": "Sysvar: Rent",
   "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4":  "Jupiter v6",
-  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "Raydium AMM",
 };
 
-async function rpcRequest(method, params) {
-  const response = await fetch(url, {
+async function rpc(method, params) {
+  const res  = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: "forensic-agent", method, params }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: "1", method, params }),
   });
-  const data = await response.json();
-  return data.result;
+  return (await res.json()).result;
 }
 
-function fmt(ts) {
-  return new Date(ts * 1000).toISOString().replace("T", " ").slice(0, 19) + " UTC";
-}
-function fmtDelta(s) {
-  const abs = Math.abs(s);
-  const sign = s < 0 ? "-" : "+";
-  if (abs < 60) return `${sign}${abs}s`;
-  return `${sign}${Math.floor(abs / 60)}m ${abs % 60}s`;
-}
+const fmt      = (ts) => new Date(ts * 1000).toISOString().replace("T", " ").slice(0, 19) + " UTC";
+const programs = (tx) => (tx?.transaction?.message?.accountKeys ?? [])
+  .map((a) => KNOWN[a.pubkey ?? a]).filter(Boolean);
 
-async function getOwner(tokenAccountAddress) {
-  const info = await rpcRequest("getAccountInfo", [tokenAccountAddress, { encoding: "jsonParsed" }]);
-  return info?.value?.data?.parsed?.info?.owner ?? null;
-}
+// Page backwards until we've passed a target date, collect sigs in that day window
+async function getSigsAroundDate(address, targetDateStr, windowDays = 2) {
+  const dayStart = Date.parse(targetDateStr + "T00:00:00Z") / 1000;
+  const dayEnd   = dayStart + windowDays * 86400;
 
-// Page all the way to the oldest signatures, return the first N chronologically
-async function getOldestSignatures(address, n = 20) {
   let before = undefined;
-  let pages = [];
+  let found  = [];
+  let done   = false;
 
-  for (let page = 0; page < 10; page++) {
+  for (let page = 0; page < 20 && !done; page++) {
     const params = [address, { limit: 1000, ...(before ? { before } : {}) }];
-    const sigs = await rpcRequest("getSignaturesForAddress", params);
+    const sigs   = await rpc("getSignaturesForAddress", params);
     if (!sigs || sigs.length === 0) break;
-    pages.push(...sigs);
+
+    for (const s of sigs) {
+      if (s.blockTime <= dayEnd && s.blockTime >= dayStart) found.push(s);
+      if (s.blockTime < dayStart) { done = true; break; }
+    }
+
     if (sigs.length < 1000) break;
     before = sigs[sigs.length - 1].signature;
     await new Promise((r) => setTimeout(r, 200));
   }
 
-  // Reverse so oldest is first, return first n
-  return pages.reverse().slice(0, n);
+  return found.reverse(); // oldest first
 }
 
-function classifyTx(tx) {
-  if (!tx?.transaction) return "unknown";
-  const accounts = (tx.transaction.message.accountKeys || []).map((a) => a.pubkey ?? a);
-  const ids = new Set(accounts);
-  if (ids.has("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")) return "Pump.fun buy/sell";
-  if (ids.has("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"))  return "Jupiter swap";
-  if (ids.has("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"))  return "Raydium swap";
-  if (ids.has("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bRS"))  return "ATA init / transfer";
-  return "other";
-}
-
-function getTokenDelta(tx) {
+function getTokenFlow(tx) {
   const pre  = tx.meta?.preTokenBalances  ?? [];
   const post = tx.meta?.postTokenBalances ?? [];
-  const preAmt  = parseFloat(pre.find((b)  => b.mint === tokenMintAddress)?.uiTokenAmount?.uiAmountString  ?? "0");
-  const postAmt = parseFloat(post.find((b) => b.mint === tokenMintAddress)?.uiTokenAmount?.uiAmountString ?? "0");
-  return postAmt - preAmt;
+
+  const flows = [];
+  const allMints = new Set([...pre, ...post].map((b) => b.mint));
+
+  for (const mint of allMints) {
+    if (mint !== tokenMintAddress) continue;
+    const preEntry  = pre.find((b)  => b.mint === mint);
+    const postEntry = post.find((b) => b.mint === mint);
+    const preAmt    = parseFloat(preEntry?.uiTokenAmount?.uiAmountString  ?? "0");
+    const postAmt   = parseFloat(postEntry?.uiTokenAmount?.uiAmountString ?? "0");
+    const delta     = postAmt - preAmt;
+    if (delta !== 0) flows.push({ mint, delta, owner: postEntry?.owner ?? preEntry?.owner ?? "?" });
+  }
+  return flows;
 }
 
-function getSolDelta(tx, wallet) {
-  const accounts = (tx.transaction.message.accountKeys || []).map((a) => a.pubkey ?? a);
-  const idx = accounts.indexOf(wallet);
-  if (idx === -1) return null;
-  const pre  = tx.meta?.preBalances?.[idx]  ?? 0;
-  const post = tx.meta?.postBalances?.[idx] ?? 0;
-  return (post - pre) / 1e9;
-}
-
-function getPrograms(tx) {
-  if (!tx?.transaction) return [];
-  const accounts = (tx.transaction.message.accountKeys || []).map((a) => a.pubkey ?? a);
-  return accounts.map((a) => KNOWN_PROGRAMS[a] ?? null).filter(Boolean);
+function getMintToInstructions(tx) {
+  if (!tx?.transaction?.message?.instructions) return [];
+  const inner = tx.meta?.innerInstructions ?? [];
+  const all   = [
+    ...tx.transaction.message.instructions,
+    ...inner.flatMap((i) => i.instructions),
+  ];
+  return all.filter(
+    (ix) =>
+      ix?.parsed?.type === "mintTo" ||
+      ix?.parsed?.type === "initializeAccount" ||
+      ix?.parsed?.type === "transfer" ||
+      ix?.parsed?.type === "transferChecked"
+  );
 }
 
 async function main() {
   console.log("=================================================================");
-  console.log("  SNIPER INVESTIGATION — Wallet that bought at second 0");
-  console.log(`  Token Account : ${snipedTokenAccount}`);
-  console.log(`  Token Mint    : ${tokenMintAddress}`);
+  console.log("  ORIGIN TRACE — Where did the 284M tokens come from?");
+  console.log(`  Owner wallet : ${ownerWallet}`);
+  console.log(`  Token        : ${tokenMintAddress}`);
+  console.log(`  Scanning     : ${SEED_DATE_STR} (±2 days)`);
   console.log("=================================================================\n");
 
-  // 1. Resolve owner
-  process.stdout.write("[1/4] Resolving token account owner... ");
-  const ownerWallet = await getOwner(snipedTokenAccount);
-  console.log(ownerWallet ?? "not found");
-  if (!ownerWallet) { console.log("Cannot proceed."); return; }
+  // 1. Get all owner-wallet transactions around Dec 17 2025
+  process.stdout.write(`[1/3] Paging owner wallet history to ${SEED_DATE_STR}... `);
+  const sigs = await getSigsAroundDate(ownerWallet, SEED_DATE_STR, 2);
+  console.log(`${sigs.length} transactions found in window.\n`);
 
-  // 2. Get token mint's oldest tx to establish real launch time
-  process.stdout.write("[2/4] Finding true token launch transaction... ");
-  const mintOldestSigs = await getOldestSignatures(tokenMintAddress, 1);
-  const launchTime = mintOldestSigs[0]?.blockTime ?? null;
-  const launchSig  = mintOldestSigs[0]?.signature ?? null;
-  console.log(launchTime ? fmt(launchTime) : "unknown");
-  console.log(`      Launch tx: ${launchSig?.slice(0, 20)}...\n`);
+  if (sigs.length === 0) {
+    console.log("No transactions found. The owner may have very few txs or the date is wrong.");
+    return;
+  }
 
-  // 3. Get the first 20 transactions of the token account (oldest = the snipe)
-  console.log("[3/4] Fetching first 20 transactions of the sniped token account...\n");
-  const tokenAcctSigs = await getOldestSignatures(snipedTokenAccount, 20);
+  // 2. Fetch and decode each, filter to ones touching our token mint
+  console.log(`[2/3] Decoding transactions — filtering for token mint activity...\n`);
 
-  console.log(`  #   Time (UTC)             Δ Launch   Type                   Token Δ              SOL Δ`);
-  console.log(`  --  --------------------  ----------  ---------------------  -------------------  ---------`);
-
-  const decoded = [];
-  for (let i = 0; i < tokenAcctSigs.length; i++) {
-    const sig = tokenAcctSigs[i];
-    await new Promise((r) => setTimeout(r, 250));
-
-    const tx = await rpcRequest("getTransaction", [
-      sig.signature,
+  const relevant = [];
+  for (let i = 0; i < sigs.length; i++) {
+    const s   = sigs[i];
+    const tx  = await rpc("getTransaction", [
+      s.signature,
       { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
     ]);
 
-    const type       = classifyTx(tx);
-    const tokenDelta = tx ? getTokenDelta(tx) : null;
-    const solDelta   = tx ? getSolDelta(tx, ownerWallet) : null;
-    const programs   = tx ? getPrograms(tx) : [];
-    const deltaSec   = launchTime ? sig.blockTime - launchTime : null;
+    // Only keep txs that touched our mint
+    const prePost = [...(tx?.meta?.preTokenBalances ?? []), ...(tx?.meta?.postTokenBalances ?? [])];
+    const touchesMint = prePost.some((b) => b.mint === tokenMintAddress);
 
-    const tokenStr = tokenDelta !== null ? (tokenDelta >= 0 ? `+${tokenDelta.toLocaleString()}` : tokenDelta.toLocaleString()) : "?";
-    const solStr   = solDelta   !== null ? solDelta.toFixed(4) : "?";
-    const deltaStr = deltaSec !== null ? fmtDelta(deltaSec) : "?";
-
-    console.log(
-      `  #${String(i + 1).padStart(2)}  ${fmt(sig.blockTime)}  ${deltaStr.padStart(10)}  ${type.padEnd(21)}  ${tokenStr.padStart(19)}  ${solStr.padStart(9)}`
-    );
-    if (programs.length) console.log(`       Programs: ${programs.join(", ")}`);
-
-    decoded.push({ sig, tx, type, tokenDelta, solDelta, deltaSec, programs });
-  }
-
-  // 4. Verdict
-  const firstBuy  = decoded.find((d) => (d.tokenDelta ?? 0) > 0);
-  const firstSell = decoded.find((d) => (d.tokenDelta ?? 0) < 0);
-  const buyCount  = decoded.filter((d) => (d.tokenDelta ?? 0) > 0).length;
-  const sellCount = decoded.filter((d) => (d.tokenDelta ?? 0) < 0).length;
-  const isPump    = decoded.some((d) => d.type === "Pump.fun buy/sell");
-
-  console.log("\n=================================================================");
-  console.log("  VERDICT");
-  console.log("=================================================================");
-  console.log(`\n  Owner wallet:    ${ownerWallet}`);
-  console.log(`  Token launched:  ${launchTime ? fmt(launchTime) : "unknown"}`);
-  console.log(`  First buy at:    ${firstBuy ? `${fmt(firstBuy.sig.blockTime)}  (${fmtDelta(firstBuy.deltaSec)} after launch)` : "not found"}`);
-  console.log(`  Buys / Sells:    ${buyCount} buys, ${sellCount} sells`);
-  console.log(`  Protocol:        ${isPump ? "Pump.fun" : "other"}`);
-
-  if (firstBuy) {
-    if (firstBuy.deltaSec <= 2) {
-      console.log(`\n  🚨 SAME-BLOCK SNIPE — Bought in the exact launch block (+${firstBuy.deltaSec}s).`);
-      console.log(`     This is a bot (bundler or mempool listener) that fires in the`);
-      console.log(`     same block as token creation — classic insider/bundler pattern.`);
-    } else if (firstBuy.deltaSec <= 30) {
-      console.log(`\n  ⚠️  FAST SNIPE — Bought ${fmtDelta(firstBuy.deltaSec)} after launch.`);
-      console.log(`     Very fast but not same-block. Likely an automated monitoring bot.`);
-    } else if (firstBuy.deltaSec <= 300) {
-      console.log(`\n  ⚠️  EARLY BUY — Purchased ${fmtDelta(firstBuy.deltaSec)} after launch.`);
-      console.log(`     Early but not bot-speed. Could be an alert-driven manual buy.`);
-    } else {
-      console.log(`\n  ℹ️  Late buy — ${fmtDelta(firstBuy.deltaSec)} after launch. Not a snipe.`);
+    if (touchesMint) {
+      const flows  = getTokenFlow(tx);
+      const ixs    = getMintToInstructions(tx);
+      const progs  = programs(tx);
+      relevant.push({ s, tx, flows, ixs, progs });
     }
-  } else {
-    console.log(`\n  ❓ No buy transaction detected in the first 20 token account transactions.`);
+
+    await new Promise((r) => setTimeout(r, 200));
   }
 
-  if (sellCount > 0) {
-    console.log(`\n  ⚠️  ${sellCount} sell(s) detected — wallet has partially or fully exited.`);
-    const totalTokenIn  = decoded.filter((d) => (d.tokenDelta ?? 0) > 0).reduce((s, d) => s + d.tokenDelta, 0);
-    const totalTokenOut = Math.abs(decoded.filter((d) => (d.tokenDelta ?? 0) < 0).reduce((s, d) => s + d.tokenDelta, 0));
-    console.log(`     Bought: ${totalTokenIn.toLocaleString()} tokens | Sold: ${totalTokenOut.toLocaleString()} tokens`);
-  } else {
-    console.log(`\n  ℹ️  No sells in first 20 txs — wallet appears to be holding.`);
+  console.log(`  ${relevant.length} transaction(s) touched the token mint in this window.\n`);
+
+  // 3. Print each relevant tx in detail
+  console.log("[3/3] Detailed breakdown:\n");
+
+  for (let i = 0; i < relevant.length; i++) {
+    const { s, tx, flows, ixs, progs } = relevant[i];
+    const err   = tx?.meta?.err ? "❌ FAILED" : "✅ OK";
+    const delta = flows.find((f) => f.mint === tokenMintAddress);
+
+    console.log(`  ── Tx #${i + 1} ──────────────────────────────────────────────`);
+    console.log(`  Time      : ${fmt(s.blockTime)}`);
+    console.log(`  Status    : ${err}`);
+    console.log(`  Signature : ${s.signature}`);
+    console.log(`  Programs  : ${progs.join(", ") || "unknown"}`);
+
+    if (delta) {
+      const dir = delta.delta > 0 ? "RECEIVED" : "SENT";
+      console.log(`  Token flow: ${dir} ${Math.abs(delta.delta).toLocaleString()} tokens  (owner: ${delta.owner.slice(0, 12)}...)`);
+    }
+
+    // Show parsed instructions that reveal the source
+    if (ixs.length > 0) {
+      console.log(`  Key instructions:`);
+      ixs.forEach((ix) => {
+        const p = ix.parsed;
+        if (p?.type === "mintTo") {
+          console.log(`    🪙 mintTo — minted ${parseFloat(p.info?.amount ?? 0) / 1e6} tokens → ${p.info?.account?.slice(0, 16)}...`);
+        } else if (p?.type === "initializeAccount") {
+          console.log(`    🆕 initializeAccount — new token account for owner ${p.info?.owner?.slice(0, 16)}...`);
+        } else if (p?.type === "transfer" || p?.type === "transferChecked") {
+          const amt = p.info?.tokenAmount?.uiAmount ?? p.info?.amount;
+          const src = p.info?.source?.slice(0, 16)  ?? "?";
+          const dst = p.info?.destination?.slice(0, 16) ?? "?";
+          console.log(`    ↔️  ${p.type} — ${amt} tokens  ${src}... → ${dst}...`);
+        }
+      });
+    }
+
+    // Show all accounts in the tx to find co-signers
+    const accounts = (tx?.transaction?.message?.accountKeys ?? [])
+      .map((a) => ({ addr: a.pubkey ?? a, signer: a.signer, writable: a.writable }))
+      .filter((a) => a.signer && a.addr !== ownerWallet);
+
+    if (accounts.length > 0) {
+      console.log(`  Co-signers:`);
+      accounts.forEach((a) => console.log(`    🔑 ${a.addr}  ${KNOWN[a.addr] ?? ""}`));
+    }
+    console.log();
   }
 
-  console.log("\n=================================================================");
+  // Summary
+  if (relevant.length === 0) {
+    console.log("=================================================================");
+    console.log("  ❓ No token-mint activity found on the owner wallet in this window.");
+    console.log("     The 284M tokens may have been seeded via a separate ATA that");
+    console.log("     isn't directly linked to this owner address in the transaction logs.");
+    console.log("=================================================================");
+  } else {
+    const firstIn = relevant.find((r) => (r.flows.find((f) => f.delta > 0)));
+    console.log("=================================================================");
+    console.log("  ORIGIN SUMMARY");
+    console.log("=================================================================");
+    if (firstIn) {
+      const prog = firstIn.progs.join(", ") || "unknown protocol";
+      console.log(`\n  First token receipt: ${fmt(firstIn.s.blockTime)}`);
+      console.log(`  Via protocol       : ${prog}`);
+      const mintTo = firstIn.ixs.find((ix) => ix.parsed?.type === "mintTo");
+      if (mintTo) {
+        console.log(`\n  🚨 DIRECT MINT DETECTED — tokens were minted directly to this wallet.`);
+        console.log(`     This is a dev/team allocation, not a market buy.`);
+      } else {
+        console.log(`\n  ℹ️  Tokens arrived via transfer (not a direct mint).`);
+        console.log(`     Source was another wallet — likely a buy or OTC transfer.`);
+      }
+    }
+    console.log("=================================================================");
+  }
 }
 
 main();
