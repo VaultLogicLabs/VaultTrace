@@ -1,12 +1,19 @@
 const apiKey = process.env.HELIUS_API_KEY;
 const url = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`;
-const tokenMintAddress = "7sGdNQSvUGpahh6qyXB3g5gsdK9FAzZM299KyCXspump"; // $HTTPS
-const TOP_N = 20;
 
-// Wallets that bought within this many seconds of token launch are flagged
-const EARLY_BUY_WINDOW_SECONDS = 5 * 60; // 5 minutes
-// Wallets whose first buy happened within this many seconds of each other are timing-clustered
-const SYNC_WINDOW_SECONDS = 30;
+const snipedTokenAccount = "4XRaaCBRjNKHTSatXXxKgQqkE4nSePkiKrL5pHsvvf7r";
+const tokenMintAddress   = "7sGdNQSvUGpahh6qyXB3g5gsdK9FAzZM299KyCXspump";
+
+const KNOWN_PROGRAMS = {
+  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "Pump.fun Program",
+  "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM": "Pump.fun Fee Wallet",
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA":  "SPL Token Program",
+  "11111111111111111111111111111111":               "System Program",
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bRS": "Associated Token Program",
+  "ComputeBudget111111111111111111111111111111111": "Compute Budget",
+  "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4":  "Jupiter v6",
+  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "Raydium AMM",
+};
 
 async function rpcRequest(method, params) {
   const response = await fetch(url, {
@@ -18,166 +25,174 @@ async function rpcRequest(method, params) {
   return data.result;
 }
 
-function fmt(unixTs) {
-  return new Date(unixTs * 1000).toISOString().replace("T", " ").slice(0, 19) + " UTC";
+function fmt(ts) {
+  return new Date(ts * 1000).toISOString().replace("T", " ").slice(0, 19) + " UTC";
 }
-
-function fmtDelta(seconds) {
-  const abs = Math.abs(seconds);
-  const sign = seconds < 0 ? "-" : "+";
+function fmtDelta(s) {
+  const abs = Math.abs(s);
+  const sign = s < 0 ? "-" : "+";
   if (abs < 60) return `${sign}${abs}s`;
-  if (abs < 3600) return `${sign}${Math.floor(abs / 60)}m ${abs % 60}s`;
-  return `${sign}${Math.floor(abs / 3600)}h ${Math.floor((abs % 3600) / 60)}m`;
+  return `${sign}${Math.floor(abs / 60)}m ${abs % 60}s`;
 }
 
-// Pages backwards to find the absolute oldest signature for an address
-async function getOldestSignature(address) {
-  let before = undefined;
-  let oldest = null;
+async function getOwner(tokenAccountAddress) {
+  const info = await rpcRequest("getAccountInfo", [tokenAccountAddress, { encoding: "jsonParsed" }]);
+  return info?.value?.data?.parsed?.info?.owner ?? null;
+}
 
-  for (let page = 0; page < 5; page++) {
+// Page all the way to the oldest signatures, return the first N chronologically
+async function getOldestSignatures(address, n = 20) {
+  let before = undefined;
+  let pages = [];
+
+  for (let page = 0; page < 10; page++) {
     const params = [address, { limit: 1000, ...(before ? { before } : {}) }];
     const sigs = await rpcRequest("getSignaturesForAddress", params);
     if (!sigs || sigs.length === 0) break;
-    oldest = sigs[sigs.length - 1];
+    pages.push(...sigs);
     if (sigs.length < 1000) break;
-    before = oldest.signature;
-    await new Promise((r) => setTimeout(r, 150));
+    before = sigs[sigs.length - 1].signature;
+    await new Promise((r) => setTimeout(r, 200));
   }
 
-  return oldest;
+  // Reverse so oldest is first, return first n
+  return pages.reverse().slice(0, n);
 }
 
-// The true launch time = the blockTime of the mint account creation tx.
-// We fetch the mint's oldest tx and then confirm via getAccountInfo when the
-// account was first funded. As a fallback we use the minimum blockTime across
-// the top-holder token accounts (they cannot exist before the mint).
-async function getTrueLaunchTime(topHolderBuyTimes) {
-  const mintOldest = await getOldestSignature(tokenMintAddress);
-  const mintTime = mintOldest?.blockTime ?? null;
+function classifyTx(tx) {
+  if (!tx?.transaction) return "unknown";
+  const accounts = (tx.transaction.message.accountKeys || []).map((a) => a.pubkey ?? a);
+  const ids = new Set(accounts);
+  if (ids.has("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")) return "Pump.fun buy/sell";
+  if (ids.has("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"))  return "Jupiter swap";
+  if (ids.has("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"))  return "Raydium swap";
+  if (ids.has("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bRS"))  return "ATA init / transfer";
+  return "other";
+}
 
-  // True launch = earliest of (mint oldest tx, earliest holder buy)
-  const holderMin = topHolderBuyTimes.reduce((min, t) => (t !== null && t < min ? t : min), Infinity);
-  const candidates = [mintTime, holderMin === Infinity ? null : holderMin].filter(Boolean);
-  return candidates.length ? Math.min(...candidates) : null;
+function getTokenDelta(tx) {
+  const pre  = tx.meta?.preTokenBalances  ?? [];
+  const post = tx.meta?.postTokenBalances ?? [];
+  const preAmt  = parseFloat(pre.find((b)  => b.mint === tokenMintAddress)?.uiTokenAmount?.uiAmountString  ?? "0");
+  const postAmt = parseFloat(post.find((b) => b.mint === tokenMintAddress)?.uiTokenAmount?.uiAmountString ?? "0");
+  return postAmt - preAmt;
+}
+
+function getSolDelta(tx, wallet) {
+  const accounts = (tx.transaction.message.accountKeys || []).map((a) => a.pubkey ?? a);
+  const idx = accounts.indexOf(wallet);
+  if (idx === -1) return null;
+  const pre  = tx.meta?.preBalances?.[idx]  ?? 0;
+  const post = tx.meta?.postBalances?.[idx] ?? 0;
+  return (post - pre) / 1e9;
+}
+
+function getPrograms(tx) {
+  if (!tx?.transaction) return [];
+  const accounts = (tx.transaction.message.accountKeys || []).map((a) => a.pubkey ?? a);
+  return accounts.map((a) => KNOWN_PROGRAMS[a] ?? null).filter(Boolean);
 }
 
 async function main() {
   console.log("=================================================================");
-  console.log(`  BUY TIMING ANALYSIS — Top ${TOP_N} Holders vs Token Launch`);
-  console.log(`  Token: ${tokenMintAddress}`);
+  console.log("  SNIPER INVESTIGATION — Wallet that bought at second 0");
+  console.log(`  Token Account : ${snipedTokenAccount}`);
+  console.log(`  Token Mint    : ${tokenMintAddress}`);
   console.log("=================================================================\n");
 
-  // Step 1: Top holders
-  console.log(`[1/3] Fetching top ${TOP_N} holders...`);
-  const largestAccounts = await rpcRequest("getTokenLargestAccounts", [tokenMintAddress]);
-  if (!largestAccounts?.value) { console.log("No holder data found."); return; }
-  const topHolders = largestAccounts.value.slice(0, TOP_N);
-  console.log(`      Found ${topHolders.length} holders.\n`);
+  // 1. Resolve owner
+  process.stdout.write("[1/4] Resolving token account owner... ");
+  const ownerWallet = await getOwner(snipedTokenAccount);
+  console.log(ownerWallet ?? "not found");
+  if (!ownerWallet) { console.log("Cannot proceed."); return; }
 
-  // Step 2: First acquisition time per holder (token account birth = first buy)
-  console.log(`[2/3] Tracing first token acquisition per holder...`);
-  const rawHolderData = [];
+  // 2. Get token mint's oldest tx to establish real launch time
+  process.stdout.write("[2/4] Finding true token launch transaction... ");
+  const mintOldestSigs = await getOldestSignatures(tokenMintAddress, 1);
+  const launchTime = mintOldestSigs[0]?.blockTime ?? null;
+  const launchSig  = mintOldestSigs[0]?.signature ?? null;
+  console.log(launchTime ? fmt(launchTime) : "unknown");
+  console.log(`      Launch tx: ${launchSig?.slice(0, 20)}...\n`);
 
-  for (let i = 0; i < topHolders.length; i++) {
-    const { address, amount } = topHolders[i];
-    const tokens = (parseInt(amount) / 10 ** 6).toLocaleString();
-    process.stdout.write(`  #${String(i + 1).padStart(2)} ${address.slice(0, 10)}... `);
-    const oldest = await getOldestSignature(address);
-    const buyTime = oldest?.blockTime ?? null;
-    process.stdout.write(`${buyTime ? fmt(buyTime) : "unknown"}\n`);
-    rawHolderData.push({ address, tokens, buyTime });
-    await new Promise((r) => setTimeout(r, 300));
-  }
+  // 3. Get the first 20 transactions of the token account (oldest = the snipe)
+  console.log("[3/4] Fetching first 20 transactions of the sniped token account...\n");
+  const tokenAcctSigs = await getOldestSignatures(snipedTokenAccount, 20);
 
-  // Step 3: True launch time = minimum of mint creation and earliest holder buy
-  process.stdout.write("\n[3/3] Determining true token launch time...");
-  const buyTimes = rawHolderData.map((h) => h.buyTime);
-  const launchTime = await getTrueLaunchTime(buyTimes);
-  console.log(` ${launchTime ? fmt(launchTime) : "unknown"}\n`);
+  console.log(`  #   Time (UTC)             Δ Launch   Type                   Token Δ              SOL Δ`);
+  console.log(`  --  --------------------  ----------  ---------------------  -------------------  ---------`);
 
-  // Annotate each holder with delay
-  const holderData = rawHolderData.map((h) => ({
-    ...h,
-    delaySeconds: h.buyTime !== null && launchTime !== null ? h.buyTime - launchTime : null,
-  }));
+  const decoded = [];
+  for (let i = 0; i < tokenAcctSigs.length; i++) {
+    const sig = tokenAcctSigs[i];
+    await new Promise((r) => setTimeout(r, 250));
 
-  // ── Per-holder table ───────────────────────────────────────────────────────
-  console.log(`  #   Token Account        Tokens                  First Buy (UTC)           Delay`);
-  console.log(`  --  ------------------  ----------------------  ------------------------  -------`);
-  holderData.forEach((h, i) => {
-    const d = h.delaySeconds;
-    const delayStr = d !== null ? fmtDelta(d) : "unknown";
-    const timeStr = h.buyTime ? fmt(h.buyTime) : "unknown";
-    const flag = d !== null && d >= 0 && d <= EARLY_BUY_WINDOW_SECONDS ? " ⚠️" : "";
+    const tx = await rpcRequest("getTransaction", [
+      sig.signature,
+      { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
+    ]);
+
+    const type       = classifyTx(tx);
+    const tokenDelta = tx ? getTokenDelta(tx) : null;
+    const solDelta   = tx ? getSolDelta(tx, ownerWallet) : null;
+    const programs   = tx ? getPrograms(tx) : [];
+    const deltaSec   = launchTime ? sig.blockTime - launchTime : null;
+
+    const tokenStr = tokenDelta !== null ? (tokenDelta >= 0 ? `+${tokenDelta.toLocaleString()}` : tokenDelta.toLocaleString()) : "?";
+    const solStr   = solDelta   !== null ? solDelta.toFixed(4) : "?";
+    const deltaStr = deltaSec !== null ? fmtDelta(deltaSec) : "?";
+
     console.log(
-      `  #${String(i + 1).padStart(2)}  ${h.address.slice(0, 10)}...  ${h.tokens.padStart(22)}  ${timeStr}  ${delayStr.padStart(7)}${flag}`
+      `  #${String(i + 1).padStart(2)}  ${fmt(sig.blockTime)}  ${deltaStr.padStart(10)}  ${type.padEnd(21)}  ${tokenStr.padStart(19)}  ${solStr.padStart(9)}`
     );
-  });
+    if (programs.length) console.log(`       Programs: ${programs.join(", ")}`);
 
-  // ── Early buyer report ─────────────────────────────────────────────────────
-  const earlyBuyers = holderData.filter(
-    (h) => h.delaySeconds !== null && h.delaySeconds >= 0 && h.delaySeconds <= EARLY_BUY_WINDOW_SECONDS
-  );
-
-  console.log("\n=================================================================");
-  console.log("  EARLY BUYER REPORT (within 5 min of launch)");
-  console.log("=================================================================");
-
-  if (earlyBuyers.length === 0) {
-    console.log("\n✅ No wallets in the top 20 bought within the first 5 minutes of launch.");
-  } else {
-    console.log(`\n⚠️  ${earlyBuyers.length} wallet(s) acquired tokens within 5 minutes of launch:\n`);
-    earlyBuyers.forEach((h) => {
-      const num = holderData.findIndex((x) => x.address === h.address) + 1;
-      console.log(`  #${String(num).padStart(2)}  ${h.address}  ${fmtDelta(h.delaySeconds)} after launch  (${h.tokens} tokens)`);
-    });
+    decoded.push({ sig, tx, type, tokenDelta, solDelta, deltaSec, programs });
   }
 
-  // ── Synchronized buy timing ────────────────────────────────────────────────
-  const withTime = holderData.filter((h) => h.buyTime !== null).sort((a, b) => a.buyTime - b.buyTime);
-  const visited = new Set();
-  const syncClusters = [];
+  // 4. Verdict
+  const firstBuy  = decoded.find((d) => (d.tokenDelta ?? 0) > 0);
+  const firstSell = decoded.find((d) => (d.tokenDelta ?? 0) < 0);
+  const buyCount  = decoded.filter((d) => (d.tokenDelta ?? 0) > 0).length;
+  const sellCount = decoded.filter((d) => (d.tokenDelta ?? 0) < 0).length;
+  const isPump    = decoded.some((d) => d.type === "Pump.fun buy/sell");
 
-  for (let i = 0; i < withTime.length; i++) {
-    if (visited.has(withTime[i].address)) continue;
-    const group = [withTime[i]];
-    for (let j = i + 1; j < withTime.length; j++) {
-      if (Math.abs(withTime[j].buyTime - withTime[i].buyTime) <= SYNC_WINDOW_SECONDS) {
-        group.push(withTime[j]);
-      }
+  console.log("\n=================================================================");
+  console.log("  VERDICT");
+  console.log("=================================================================");
+  console.log(`\n  Owner wallet:    ${ownerWallet}`);
+  console.log(`  Token launched:  ${launchTime ? fmt(launchTime) : "unknown"}`);
+  console.log(`  First buy at:    ${firstBuy ? `${fmt(firstBuy.sig.blockTime)}  (${fmtDelta(firstBuy.deltaSec)} after launch)` : "not found"}`);
+  console.log(`  Buys / Sells:    ${buyCount} buys, ${sellCount} sells`);
+  console.log(`  Protocol:        ${isPump ? "Pump.fun" : "other"}`);
+
+  if (firstBuy) {
+    if (firstBuy.deltaSec <= 2) {
+      console.log(`\n  🚨 SAME-BLOCK SNIPE — Bought in the exact launch block (+${firstBuy.deltaSec}s).`);
+      console.log(`     This is a bot (bundler or mempool listener) that fires in the`);
+      console.log(`     same block as token creation — classic insider/bundler pattern.`);
+    } else if (firstBuy.deltaSec <= 30) {
+      console.log(`\n  ⚠️  FAST SNIPE — Bought ${fmtDelta(firstBuy.deltaSec)} after launch.`);
+      console.log(`     Very fast but not same-block. Likely an automated monitoring bot.`);
+    } else if (firstBuy.deltaSec <= 300) {
+      console.log(`\n  ⚠️  EARLY BUY — Purchased ${fmtDelta(firstBuy.deltaSec)} after launch.`);
+      console.log(`     Early but not bot-speed. Could be an alert-driven manual buy.`);
+    } else {
+      console.log(`\n  ℹ️  Late buy — ${fmtDelta(firstBuy.deltaSec)} after launch. Not a snipe.`);
     }
-    if (group.length > 1) {
-      group.forEach((h) => visited.add(h.address));
-      syncClusters.push(group);
-    }
-  }
-
-  console.log("\n=================================================================");
-  console.log(`  SYNCHRONIZED BUY TIMING (within ${SYNC_WINDOW_SECONDS}s of each other)`);
-  console.log("=================================================================");
-
-  if (syncClusters.length === 0) {
-    console.log("\n✅ No synchronized buy timing detected across top 20 holders.");
   } else {
-    syncClusters.forEach((group, ci) => {
-      const span = group[group.length - 1].buyTime - group[0].buyTime;
-      console.log(`\n⚠️  [SYNC CLUSTER #${ci + 1}] ${group.length} wallets bought within ${span}s of each other:`);
-      group.forEach((h) => {
-        const num = holderData.findIndex((x) => x.address === h.address) + 1;
-        console.log(`     #${String(num).padStart(2)}  ${h.address}  ${fmt(h.buyTime)}  (${fmtDelta(h.delaySeconds ?? 0)} from launch)  ${h.tokens} tokens`);
-      });
-    });
+    console.log(`\n  ❓ No buy transaction detected in the first 20 token account transactions.`);
   }
 
-  // ── Summary ────────────────────────────────────────────────────────────────
+  if (sellCount > 0) {
+    console.log(`\n  ⚠️  ${sellCount} sell(s) detected — wallet has partially or fully exited.`);
+    const totalTokenIn  = decoded.filter((d) => (d.tokenDelta ?? 0) > 0).reduce((s, d) => s + d.tokenDelta, 0);
+    const totalTokenOut = Math.abs(decoded.filter((d) => (d.tokenDelta ?? 0) < 0).reduce((s, d) => s + d.tokenDelta, 0));
+    console.log(`     Bought: ${totalTokenIn.toLocaleString()} tokens | Sold: ${totalTokenOut.toLocaleString()} tokens`);
+  } else {
+    console.log(`\n  ℹ️  No sells in first 20 txs — wallet appears to be holding.`);
+  }
+
   console.log("\n=================================================================");
-  console.log("  SUMMARY");
-  console.log(`  Token launched:      ${launchTime ? fmt(launchTime) : "unknown"}`);
-  console.log(`  Holders scanned:     ${TOP_N}`);
-  console.log(`  Early buyers (<5m):  ${earlyBuyers.length}`);
-  console.log(`  Sync buy clusters:   ${syncClusters.length}`);
-  console.log("=================================================================");
 }
 
 main();
