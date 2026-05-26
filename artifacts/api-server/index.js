@@ -17,71 +17,113 @@ async function rpcRequest(method, params) {
   return data.result;
 }
 
+async function getFundingSource(walletAddress) {
+  // Get the full transaction history to find the very first tx
+  const signatures = await rpcRequest("getSignaturesForAddress", [
+    walletAddress,
+    { limit: 1000 },
+  ]);
+
+  if (!signatures || signatures.length === 0) return null;
+
+  // The oldest transaction is the last one in the list
+  const oldestSig = signatures[signatures.length - 1].signature;
+
+  // Fetch the full transaction to find who sent SOL to this wallet
+  const tx = await rpcRequest("getTransaction", [
+    oldestSig,
+    { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
+  ]);
+
+  if (!tx || !tx.transaction) return { signature: oldestSig, funder: null };
+
+  // Look through account keys for the fee payer / signer that isn't this wallet
+  const accounts = tx.transaction.message.accountKeys;
+  const preBalances = tx.meta?.preBalances || [];
+  const postBalances = tx.meta?.postBalances || [];
+
+  let funder = null;
+  for (let i = 0; i < accounts.length; i++) {
+    const acct = accounts[i];
+    const address = acct.pubkey || acct;
+    if (address === walletAddress) continue;
+    // A funder's balance decreases (they sent SOL)
+    if (preBalances[i] > postBalances[i]) {
+      funder = address;
+      break;
+    }
+  }
+
+  return { signature: oldestSig, funder };
+}
+
 async function analyzeTokenFootprint() {
   try {
     console.log(`[1/3] Fetching top holders for mint: ${tokenMintAddress}...`);
-    
-    // 1. Get the largest token accounts
+
     const largestAccounts = await rpcRequest("getTokenLargestAccounts", [tokenMintAddress]);
-    
+
     if (!largestAccounts || !largestAccounts.value) {
       console.log("No holder data found or invalid mint address.");
       return;
     }
 
-    // Take the top 10 holders for a quick, rate-limit safe scan
     const topHolders = largestAccounts.value.slice(0, 10);
-    console.log(`[2/3] Found top holders. Parsing funding origins for clusters...`);
+    console.log(`[2/3] Tracing funding sources for top ${topHolders.length} holders...\n`);
 
-    const fundingClusterMap = {};
+    const funderMap = {}; // funderAddress -> [wallets it funded]
+    const results = [];
 
     for (let i = 0; i < topHolders.length; i++) {
       const holder = topHolders[i];
       const walletAddress = holder.address;
-      const amount = (parseInt(holder.amount) / 10 ** 6).toLocaleString(); // Adjust decimals if needed
+      const amount = (parseInt(holder.amount) / 10 ** 6).toLocaleString();
 
-      console.log(` Checking holder #${i + 1}: ${walletAddress.slice(0, 8)}... (Holds: ${amount})`);
+      process.stdout.write(` Holder #${i + 1} ${walletAddress.slice(0, 8)}... (${amount} tokens) — tracing...`);
 
-      // 2. Fetch the transaction history for this specific wallet to trace its birth/funding
-      const signatures = await rpcRequest("getSignaturesForAddress", [
-        walletAddress,
-        { limit: 20 } // Looking at recent history for newer wallets
-      ]);
+      const origin = await getFundingSource(walletAddress);
 
-      if (signatures && signatures.length > 0) {
-        // The oldest transaction in this batch gives us a clue about its early activity
-        const oldestTxSignature = signatures[signatures.length - 1].signature;
-        
-        // Storing the footprint signature for clustering logic
-        if (!fundingClusterMap[oldestTxSignature]) {
-          fundingClusterMap[oldestTxSignature] = [];
-        }
-        fundingClusterMap[oldestTxSignature].push(walletAddress.slice(0, 8));
+      if (origin && origin.funder) {
+        process.stdout.write(` funded by ${origin.funder.slice(0, 8)}...\n`);
+        if (!funderMap[origin.funder]) funderMap[origin.funder] = [];
+        funderMap[origin.funder].push({ wallet: walletAddress, amount });
+      } else {
+        process.stdout.write(` funder unknown\n`);
       }
-      
-      // Small pause to prevent hitting rate limits on the free tier
-      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      results.push({ wallet: walletAddress, amount, origin });
+
+      // Pause to avoid rate limits
+      await new Promise((r) => setTimeout(r, 300));
     }
 
-    console.log("\n[3/3] Forensics Complete. Analyzing Cluster Footprint:\n");
-    console.log("------------------------------------------------------------");
-    
-    let bundledDetected = false;
-    for (const [tx, wallets] of Object.entries(fundingClusterMap)) {
+    console.log("\n[3/3] Forensics Complete. Analyzing Parent Wallet Clusters:\n");
+    console.log("============================================================");
+
+    let clustersFound = 0;
+    for (const [funder, wallets] of Object.entries(funderMap)) {
       if (wallets.length > 1) {
-        console.log(`⚠️  [ALERT] Potential Bundled Footprint Found!`);
-        console.log(`   Shared Tx/Origin Footprint: ${tx}`);
-        console.log(`   Linked Wallets in Top 10: ${wallets.join(", ")}\n`);
-        bundledDetected = true;
+        clustersFound++;
+        console.log(`\n⚠️  [CLUSTER DETECTED] Parent wallet: ${funder}`);
+        console.log(`   Funded ${wallets.length} wallets in the top 10:`);
+        wallets.forEach((w, idx) => {
+          console.log(`     ${idx + 1}. ${w.wallet} (holds ${w.amount} tokens)`);
+        });
       }
     }
 
-    if (!bundledDetected) {
-      console.log(" No clear, immediate wallet synchronization detected in the top 10 holders.");
-      console.log("Wallets appear to have distinct transaction footprints.");
+    if (clustersFound === 0) {
+      console.log("\n✅ No shared parent wallets detected among top 10 holders.");
+      console.log("   Each wallet appears to have been funded by a distinct source.");
     }
-    console.log("------------------------------------------------------------");
 
+    console.log("\n------------------------------------------------------------");
+    console.log("Full funding map:");
+    results.forEach((r, i) => {
+      const funder = r.origin?.funder ? r.origin.funder.slice(0, 12) + "..." : "unknown";
+      console.log(`  #${i + 1} ${r.wallet.slice(0, 12)}... ← funded by ${funder}`);
+    });
+    console.log("============================================================");
   } catch (error) {
     console.error("Forensic scan failed:", error);
   }
