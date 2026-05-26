@@ -1,6 +1,23 @@
 const apiKey = process.env.HELIUS_API_KEY;
 const url = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`;
-const tokenMintAddress = "7sGdNQSvUGpahh6qyXB3g5gsdK9FAzZM299KyCXspump"; // $HTTPS
+
+// The parent wallet identified in the previous scan
+const targetWallet = "9M1EPWt6dFKnyB6PypA9TZoJ3g4RFMBKVd2UcM33qwAi";
+
+// Max hops to trace up the chain before stopping
+const MAX_DEPTH = 6;
+
+// Known bundler / launchpad wallets (add more as needed)
+const KNOWN_ENTITIES = {
+  "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM": "Pump.fun: Fee Wallet",
+  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "Pump.fun: Program",
+  "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg": "Pump.fun: Bundler",
+  "7YttLkHDoNj9wyDur5pM1ejNaAvT9X4eqaYcHQqtj2G5": "Jupiter Aggregator",
+  "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4": "Jupiter v6",
+  "BQ72nSv9f3PRyRKCBnHLVrerrv37CYTHm5h3s9VSGQDV": "Bonkbot",
+  "HWEoBxYs7ssKuudEjzjmpileDs9685ykXMkNJsJCcaJo": "Wormhole",
+  "EhYXq3ANp5nAerUpbSgd7VK2RRcxK1zNuSQ755G5Dbqk": "Raydium: Bundler",
+};
 
 async function rpcRequest(method, params) {
   const response = await fetch(url, {
@@ -9,16 +26,15 @@ async function rpcRequest(method, params) {
     body: JSON.stringify({
       jsonrpc: "2.0",
       id: "forensic-agent",
-      method: method,
-      params: params,
+      method,
+      params,
     }),
   });
   const data = await response.json();
   return data.result;
 }
 
-async function getFundingSource(walletAddress) {
-  // Get the full transaction history to find the very first tx
+async function getOldestFunder(walletAddress) {
   const signatures = await rpcRequest("getSignaturesForAddress", [
     walletAddress,
     { limit: 1000 },
@@ -26,28 +42,23 @@ async function getFundingSource(walletAddress) {
 
   if (!signatures || signatures.length === 0) return null;
 
-  // The oldest transaction is the last one in the list
   const oldestSig = signatures[signatures.length - 1].signature;
 
-  // Fetch the full transaction to find who sent SOL to this wallet
   const tx = await rpcRequest("getTransaction", [
     oldestSig,
     { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
   ]);
 
-  if (!tx || !tx.transaction) return { signature: oldestSig, funder: null };
+  if (!tx?.transaction) return { signature: oldestSig, funder: null };
 
-  // Look through account keys for the fee payer / signer that isn't this wallet
   const accounts = tx.transaction.message.accountKeys;
   const preBalances = tx.meta?.preBalances || [];
   const postBalances = tx.meta?.postBalances || [];
 
   let funder = null;
   for (let i = 0; i < accounts.length; i++) {
-    const acct = accounts[i];
-    const address = acct.pubkey || acct;
+    const address = accounts[i].pubkey ?? accounts[i];
     if (address === walletAddress) continue;
-    // A funder's balance decreases (they sent SOL)
     if (preBalances[i] > postBalances[i]) {
       funder = address;
       break;
@@ -57,76 +68,65 @@ async function getFundingSource(walletAddress) {
   return { signature: oldestSig, funder };
 }
 
-async function analyzeTokenFootprint() {
-  try {
-    console.log(`[1/3] Fetching top holders for mint: ${tokenMintAddress}...`);
+async function traceChain(startWallet, maxDepth) {
+  const chain = [startWallet];
+  let current = startWallet;
 
-    const largestAccounts = await rpcRequest("getTokenLargestAccounts", [tokenMintAddress]);
+  console.log(`\nTracing funding chain for: ${startWallet}\n`);
+  console.log("  Depth  Wallet                                          Funded by");
+  console.log("  -----  -----------------------------------------------  --------");
 
-    if (!largestAccounts || !largestAccounts.value) {
-      console.log("No holder data found or invalid mint address.");
-      return;
+  for (let depth = 1; depth <= maxDepth; depth++) {
+    await new Promise((r) => setTimeout(r, 300));
+
+    const result = await getOldestFunder(current);
+
+    if (!result || !result.funder) {
+      console.log(`  [${depth}]    ${current.slice(0, 44)}  → no funder found (genesis or system)`);
+      break;
     }
 
-    const topHolders = largestAccounts.value.slice(0, 10);
-    console.log(`[2/3] Tracing funding sources for top ${topHolders.length} holders...\n`);
+    const { funder, signature } = result;
+    const label = KNOWN_ENTITIES[funder] ? ` ⚡ ${KNOWN_ENTITIES[funder]}` : "";
+    const shortFunder = funder.slice(0, 12) + "...";
+    const shortCurrent = current.slice(0, 44);
 
-    const funderMap = {}; // funderAddress -> [wallets it funded]
-    const results = [];
+    console.log(`  [${depth}]    ${shortCurrent}  → ${shortFunder}${label}`);
 
-    for (let i = 0; i < topHolders.length; i++) {
-      const holder = topHolders[i];
-      const walletAddress = holder.address;
-      const amount = (parseInt(holder.amount) / 10 ** 6).toLocaleString();
+    chain.push(funder);
+    current = funder;
 
-      process.stdout.write(` Holder #${i + 1} ${walletAddress.slice(0, 8)}... (${amount} tokens) — tracing...`);
-
-      const origin = await getFundingSource(walletAddress);
-
-      if (origin && origin.funder) {
-        process.stdout.write(` funded by ${origin.funder.slice(0, 8)}...\n`);
-        if (!funderMap[origin.funder]) funderMap[origin.funder] = [];
-        funderMap[origin.funder].push({ wallet: walletAddress, amount });
-      } else {
-        process.stdout.write(` funder unknown\n`);
-      }
-
-      results.push({ wallet: walletAddress, amount, origin });
-
-      // Pause to avoid rate limits
-      await new Promise((r) => setTimeout(r, 300));
+    if (KNOWN_ENTITIES[funder]) {
+      console.log(`\n  ✅ Reached known entity at depth ${depth}: ${KNOWN_ENTITIES[funder]}`);
+      break;
     }
 
-    console.log("\n[3/3] Forensics Complete. Analyzing Parent Wallet Clusters:\n");
-    console.log("============================================================");
-
-    let clustersFound = 0;
-    for (const [funder, wallets] of Object.entries(funderMap)) {
-      if (wallets.length > 1) {
-        clustersFound++;
-        console.log(`\n⚠️  [CLUSTER DETECTED] Parent wallet: ${funder}`);
-        console.log(`   Funded ${wallets.length} wallets in the top 10:`);
-        wallets.forEach((w, idx) => {
-          console.log(`     ${idx + 1}. ${w.wallet} (holds ${w.amount} tokens)`);
-        });
-      }
+    // Stop if we're going in circles
+    if (chain.slice(0, -1).includes(funder)) {
+      console.log(`\n  ⚠️  Circular reference detected at depth ${depth}, stopping.`);
+      break;
     }
-
-    if (clustersFound === 0) {
-      console.log("\n✅ No shared parent wallets detected among top 10 holders.");
-      console.log("   Each wallet appears to have been funded by a distinct source.");
-    }
-
-    console.log("\n------------------------------------------------------------");
-    console.log("Full funding map:");
-    results.forEach((r, i) => {
-      const funder = r.origin?.funder ? r.origin.funder.slice(0, 12) + "..." : "unknown";
-      console.log(`  #${i + 1} ${r.wallet.slice(0, 12)}... ← funded by ${funder}`);
-    });
-    console.log("============================================================");
-  } catch (error) {
-    console.error("Forensic scan failed:", error);
   }
+
+  return chain;
 }
 
-analyzeTokenFootprint();
+async function main() {
+  console.log("=================================================================");
+  console.log("  DEEP CHAIN TRACE — Parent Wallet Forensics");
+  console.log("=================================================================");
+  console.log(`  Target: ${targetWallet}`);
+  console.log(`  Max depth: ${MAX_DEPTH} hops\n`);
+
+  const chain = await traceChain(targetWallet, MAX_DEPTH);
+
+  console.log("\n=================================================================");
+  console.log("  Full chain summary:");
+  chain.forEach((addr, i) => {
+    const label = KNOWN_ENTITIES[addr] ? ` (${KNOWN_ENTITIES[addr]})` : "";
+    console.log(`  ${i === 0 ? "Start" : `Hop ${i}  `} → ${addr}${label}`);
+  });
+  console.log("=================================================================");
+}
+
+main();
