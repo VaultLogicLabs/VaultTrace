@@ -1,17 +1,14 @@
 const apiKey = process.env.HELIUS_API_KEY;
 const url = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`;
 
-const tokenMintAddress = "7sGdNQSvUGpahh6qyXB3g5gsdK9FAzZM299KyCXspump";
+const TARGET       = "FireuLYd4yjJBhXQyBs3Mq6ZpNEjyHPNPG2eqhTP9RHV"; // shared parent
+const tokenMint    = "7sGdNQSvUGpahh6qyXB3g5gsdK9FAzZM299KyCXspump";
 
-// The two wallets to investigate
-const TARGETS = {
-  "holder1_tokenAcct":  "BmQqZCpLRD6K4JeSkfv6nNEomiVja9npxfcWkV7esK43",  // Holder #1 token account (102M)
-  "recipient_wallet":   "5TsXr6fy1kdHiyjD4sFCRCNcxqjME3HiTJBbfAH8Twhq",  // Unknown recipient of tokens from #4
+// Known wallets funded by FireuLYd4 (from prior scans)
+const KNOWN_CHILDREN = {
+  "AmK2hPHoHktE2tcJWKbfMpYR3JiMdS3J19xGdHX4ZCLK": "Holder #1 owner  (102M tokens)",
+  "G1ZmxBfUbjmYZo3TQR42aPS7GAQZxks3g3rwNsMj2ZdS": "Holder #16 token acct (12.7M tokens)",
 };
-
-// Known context from previous scans
-const KNOWN_OPERATOR = "9UcaW8ncMSBWEp597FAZbuydAWtqojVs47EnSpSKrtPV"; // Holder #4 owner
-const SEED_DATE = "2025-12-17";
 
 const KNOWN = {
   "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "Pump.fun Program",
@@ -22,8 +19,12 @@ const KNOWN = {
   "ComputeBudget111111111111111111111111111111111": "Compute Budget",
   "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4":  "Jupiter v6",
   "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "Raydium AMM",
-  [KNOWN_OPERATOR]: "⚠️ Holder #4 operator",
+  "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg": "Pump.fun Bundler",
+  "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW": "Pump.fun Launch Authority",
+  ...KNOWN_CHILDREN,
 };
+
+const CHAIN_DEPTH = 8;
 
 async function rpc(method, params) {
   const r = await fetch(url, {
@@ -36,208 +37,202 @@ async function rpc(method, params) {
 
 const fmt = (ts) => new Date(ts * 1000).toISOString().replace("T", " ").slice(0, 19) + " UTC";
 
-async function getOwner(tokenAcct) {
-  const info = await rpc("getAccountInfo", [tokenAcct, { encoding: "jsonParsed" }]);
-  const parsed = info?.value?.data?.parsed?.info;
-  return parsed?.owner ?? null;
-}
-
+// Page all the way to the oldest sigs for an address
 async function getOldestSigs(address, maxPages = 10) {
-  let before, pages = [];
+  let before; const all = [];
   for (let p = 0; p < maxPages; p++) {
     const sigs = await rpc("getSignaturesForAddress", [address, { limit: 1000, ...(before ? { before } : {}) }]);
     if (!sigs?.length) break;
-    pages.push(...sigs);
+    all.push(...sigs);
     if (sigs.length < 1000) break;
     before = sigs[sigs.length - 1].signature;
     await new Promise(r => setTimeout(r, 200));
   }
-  return pages.reverse(); // oldest first
+  return all.reverse(); // oldest first
 }
 
-async function getSigsAroundDate(address, dateStr, windowDays = 3) {
-  const start = Date.parse(dateStr + "T00:00:00Z") / 1000;
-  const end   = start + windowDays * 86400;
-  let before, found = [], done = false;
-
-  for (let p = 0; p < 20 && !done; p++) {
-    const sigs = await rpc("getSignaturesForAddress", [address, { limit: 1000, ...(before ? { before } : {}) }]);
-    if (!sigs?.length) break;
-    for (const s of sigs) {
-      if (s.blockTime <= end && s.blockTime >= start) found.push(s);
-      if (s.blockTime < start) { done = true; break; }
-    }
-    if (sigs.length < 1000) break;
-    before = sigs[sigs.length - 1].signature;
-    await new Promise(r => setTimeout(r, 200));
-  }
-  return found.reverse();
+// Get the newest N sigs (default ordering, no paging needed)
+async function getNewestSigs(address, limit = 50) {
+  return (await rpc("getSignaturesForAddress", [address, { limit }])) ?? [];
 }
 
 async function getTx(sig) {
   return rpc("getTransaction", [sig, { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 }]);
 }
 
-function tokenDelta(tx, mint) {
-  const pre  = tx?.meta?.preTokenBalances  ?? [];
-  const post = tx?.meta?.postTokenBalances ?? [];
-  const preAmt  = parseFloat(pre.find(b  => b.mint === mint)?.uiTokenAmount?.uiAmountString  ?? "0");
-  const postAmt = parseFloat(post.find(b => b.mint === mint)?.uiTokenAmount?.uiAmountString ?? "0");
-  return postAmt - preAmt;
-}
-
 function getAccounts(tx) {
   return (tx?.transaction?.message?.accountKeys ?? []).map(a => a.pubkey ?? a);
 }
 
-function signerLabels(tx, exclude = []) {
-  return (tx?.transaction?.message?.accountKeys ?? [])
-    .filter(a => a.signer && !exclude.includes(a.pubkey ?? a))
-    .map(a => ({ addr: a.pubkey ?? a, label: KNOWN[a.pubkey ?? a] ?? null }));
+function getSolDelta(tx, wallet) {
+  const accts = getAccounts(tx);
+  const idx   = accts.indexOf(wallet);
+  if (idx === -1) return null;
+  const pre  = tx.meta?.preBalances?.[idx]  ?? 0;
+  const post = tx.meta?.postBalances?.[idx] ?? 0;
+  return (post - pre) / 1e9;
 }
 
-async function profileWallet(label, address, isTokenAcct = false) {
-  console.log(`\n${"═".repeat(65)}`);
-  console.log(`  ${label}`);
-  console.log(`  Address: ${address}`);
-  console.log(`${"═".repeat(65)}`);
+// Find who funded a wallet (SOL sender in its first tx)
+async function getOldestFunder(address) {
+  const sigs = await getOldestSigs(address, 10);
+  if (!sigs.length) return null;
+  const tx = await getTx(sigs[0].signature);
+  if (!tx) return { birthTime: null, funder: null, sig: sigs[0].signature };
 
-  // Resolve owner if token account
-  let ownerAddr = address;
-  if (isTokenAcct) {
-    process.stdout.write("  Resolving owner... ");
-    ownerAddr = await getOwner(address) ?? address;
-    console.log(ownerAddr);
-    KNOWN[ownerAddr] = KNOWN[ownerAddr] ?? `⚠️ ${label} owner`;
+  const birthTime = sigs[0].blockTime;
+  const accts = getAccounts(tx);
+  const pre   = tx.meta?.preBalances  ?? [];
+  const post  = tx.meta?.postBalances ?? [];
+
+  let funder = null;
+  for (let i = 0; i < accts.length; i++) {
+    if (accts[i] === address) continue;
+    if ((pre[i] ?? 0) > (post[i] ?? 0)) { funder = accts[i]; break; }
+  }
+  return { birthTime, funder, sig: sigs[0].signature };
+}
+
+// Trace the funding chain upward
+async function traceChain(start, depth) {
+  const chain = [{ addr: start, label: "TARGET" }];
+  let current = start;
+
+  for (let d = 1; d <= depth; d++) {
+    await new Promise(r => setTimeout(r, 300));
+    const result = await getOldestFunder(current);
+    if (!result?.funder) break;
+
+    const { funder, birthTime } = result;
+    const label = KNOWN[funder] ?? null;
+    chain.push({ addr: funder, label, birthTime });
+    current = funder;
+
+    if (label) break; // hit a known entity, stop
+    if (chain.slice(0, -1).some(c => c.addr === funder)) break; // cycle
+  }
+  return chain;
+}
+
+// Find wallets that FireuLYd4 funded (by scanning its outgoing SOL txs)
+async function findFundedWallets(operatorAddr, sampleSize = 200) {
+  // Look at earliest transactions — that's when it would have seeded child wallets
+  const oldSigs = await getOldestSigs(operatorAddr, 3);
+  const newSigs = await getNewestSigs(operatorAddr, sampleSize);
+
+  // Combine, deduplicate, process oldest first
+  const allSigs = [...oldSigs];
+  const seen = new Set(oldSigs.map(s => s.signature));
+  for (const s of newSigs.reverse()) {
+    if (!seen.has(s.signature)) { allSigs.push(s); seen.add(s.signature); }
   }
 
-  // Find wallet birth (oldest tx)
-  process.stdout.write("  Finding wallet creation... ");
-  const allSigs = await getOldestSigs(ownerAddr, 10);
-  const birthTx = allSigs[0];
-  console.log(birthTx ? fmt(birthTx.blockTime) : "unknown");
+  const funded = new Map(); // addr -> { firstSeen, solSent }
+  let processed = 0;
 
-  // Scan activity around the seed date
-  process.stdout.write(`  Scanning txs around ${SEED_DATE}... `);
-  const windowSigs = await getSigsAroundDate(ownerAddr, SEED_DATE, 3);
-  console.log(`${windowSigs.length} found`);
+  for (const s of allSigs.slice(0, sampleSize)) {
+    await new Promise(r => setTimeout(r, 150));
+    const tx = await getTx(s.signature);
+    if (!tx) continue;
 
-  // Decode and filter to token-touching txs
-  const relevant = [];
-  for (const s of windowSigs) {
-    await new Promise(r => setTimeout(r, 200));
-    const tx   = await getTx(s.signature);
-    const pre  = tx?.meta?.preTokenBalances  ?? [];
-    const post = tx?.meta?.postTokenBalances ?? [];
-    const touchesMint = [...pre, ...post].some(b => b.mint === tokenMintAddress);
-    if (!touchesMint) continue;
+    const accts = getAccounts(tx);
+    const pre   = tx.meta?.preBalances  ?? [];
+    const post  = tx.meta?.postBalances ?? [];
 
-    const delta  = tokenDelta(tx, tokenMintAddress);
-    const accts  = getAccounts(tx);
-    const signers = signerLabels(tx, [ownerAddr]);
-    const linkedToKnown = accts.some(a => a === KNOWN_OPERATOR);
-    relevant.push({ s, tx, delta, signers, linkedToKnown, accts });
-  }
+    for (let i = 0; i < accts.length; i++) {
+      if (accts[i] === operatorAddr) continue;
+      // This wallet received SOL from the operator (its balance increased while operator's decreased)
+      const opIdx = accts.indexOf(operatorAddr);
+      if (opIdx === -1) continue;
+      if ((pre[opIdx] ?? 0) <= (post[opIdx] ?? 0)) continue; // operator didn't spend SOL
 
-  if (relevant.length === 0) {
-    console.log(`  ⚪ No token-mint activity found in the ${SEED_DATE} window.`);
-  } else {
-    console.log(`\n  Token activity (${SEED_DATE} window):`);
-    console.log(`  ${"─".repeat(60)}`);
-    for (const r of relevant) {
-      const dir   = r.delta > 0 ? "RECV +" : "SENT ";
-      const flag  = r.linkedToKnown ? "  ⚠️  LINKED TO HOLDER #4 OPERATOR" : "";
-      const progs = (r.tx?.transaction?.message?.accountKeys ?? [])
-        .map(a => KNOWN[a.pubkey ?? a]).filter(Boolean).join(", ");
-
-      console.log(`  ${fmt(r.s.blockTime)}  ${dir}${Math.abs(r.delta).toLocaleString()} tokens${flag}`);
-      if (progs) console.log(`    Programs : ${progs}`);
-      r.signers.filter(s => s.label || s.addr === KNOWN_OPERATOR)
-               .forEach(s => console.log(`    Co-signer: ${s.addr}  ${s.label ?? ""}`));
-    }
-    console.log(`  ${"─".repeat(60)}`);
-  }
-
-  // Check if owner wallet == KNOWN_OPERATOR or shares funding with it
-  const isDirectMatch = ownerAddr === KNOWN_OPERATOR;
-  if (isDirectMatch) {
-    console.log(`\n  🚨 DIRECT MATCH — this IS the holder #4 operator wallet.`);
-  } else {
-    // Get funder of this wallet's oldest tx
-    if (allSigs.length > 0) {
-      const oldestTx = await getTx(allSigs[0].signature);
-      const pre  = oldestTx?.meta?.preBalances  ?? [];
-      const post = oldestTx?.meta?.postBalances ?? [];
-      const accts = getAccounts(oldestTx);
-      let funder = null;
-      for (let i = 0; i < accts.length; i++) {
-        if (accts[i] === ownerAddr) continue;
-        if ((pre[i] ?? 0) > (post[i] ?? 0)) { funder = accts[i]; break; }
-      }
-      if (funder) {
-        const fLabel = KNOWN[funder] ?? "unknown";
-        const isOp   = funder === KNOWN_OPERATOR;
-        console.log(`\n  Origin funder: ${funder}  ${fLabel}`);
-        if (isOp) console.log(`  🚨 FUNDED BY HOLDER #4 OPERATOR — same actor.`);
+      const delta = (post[i] ?? 0) - (pre[i] ?? 0);
+      if (delta > 0 && (pre[i] ?? 0) === 0) {
+        // Wallet had 0 SOL before → operator seeded it
+        if (!funded.has(accts[i])) {
+          funded.set(accts[i], { firstSeen: s.blockTime, solReceived: delta / 1e9 });
+        }
       }
     }
+    processed++;
   }
 
-  return { ownerAddr, relevant };
+  return { funded, processed };
 }
 
 async function main() {
-  console.log("=================================================================");
-  console.log("  NETWORK INVESTIGATION — Holder #1 & Unknown Recipient");
-  console.log(`  Are BmQqZCpL (Holder #1) and 5TsXr6fy (recipient) connected`);
-  console.log(`  to 9UcaW8nc (Holder #4 operator)?`);
-  console.log("=================================================================");
+  console.log("═".repeat(65));
+  console.log("  DEEP INVESTIGATION — FireuLYd4yjJBh (shared parent wallet)");
+  console.log(`  Address: ${TARGET}`);
+  console.log("═".repeat(65) + "\n");
 
-  const h1 = await profileWallet(
-    "HOLDER #1 token account (102M tokens)",
-    TARGETS.holder1_tokenAcct,
-    true
-  );
+  // 1. Basic profile
+  process.stdout.write("[1/4] Wallet birth & own funding source... ");
+  const { birthTime, funder: selfFunder, sig: birthSig } = await getOldestFunder(TARGET) ?? {};
+  console.log(birthTime ? fmt(birthTime) : "unknown");
+  console.log(`      Birth tx : ${birthSig?.slice(0, 20) ?? "?"}...`);
+  console.log(`      Funded by: ${selfFunder ?? "unknown"}  ${KNOWN[selfFunder] ?? ""}`);
 
-  await new Promise(r => setTimeout(r, 500));
+  // 2. Full chain trace
+  console.log("\n[2/4] Tracing funding chain upstream...\n");
+  const chain = await traceChain(TARGET, CHAIN_DEPTH);
+  chain.forEach((c, i) => {
+    const lbl = c.label ? `  ⚡ ${c.label}` : "";
+    const ts  = c.birthTime ? `  (created ${fmt(c.birthTime)})` : "";
+    console.log(`  ${i === 0 ? "Start " : `Hop ${i} `} → ${c.addr}${lbl}${ts}`);
+  });
 
-  const recip = await profileWallet(
-    "UNKNOWN RECIPIENT (5TsXr6fy — received tokens from Holder #4)",
-    TARGETS.recipient_wallet,
-    false
-  );
+  // 3. Find wallets funded by FireuLYd4
+  console.log("\n[3/4] Scanning for wallets seeded by this operator (sample 200 txs)...");
+  const { funded, processed } = await findFundedWallets(TARGET, 200);
+  console.log(`      Scanned ${processed} transactions. Found ${funded.size} wallet(s) seeded with SOL.\n`);
 
-  // Cross-link check: do h1 and recip share the same owner?
-  console.log(`\n${"═".repeat(65)}`);
-  console.log("  CROSS-LINK SUMMARY");
-  console.log(`${"═".repeat(65)}`);
-
-  const sameOwner = h1.ownerAddr && recip.ownerAddr && h1.ownerAddr === recip.ownerAddr;
-  const h1LinkedToOp   = h1.relevant.some(r => r.linkedToKnown);
-  const recipLinkedToOp = recip.relevant.some(r => r.linkedToKnown);
-
-  if (sameOwner) {
-    console.log(`\n  🚨 SAME OWNER — Holder #1 token acct and 5TsXr6fy are controlled`);
-    console.log(`     by the same wallet: ${h1.ownerAddr}`);
-  } else {
-    console.log(`\n  Holder #1 owner : ${h1.ownerAddr}`);
-    console.log(`  Recipient owner : ${recip.ownerAddr ?? "5TsXr6fy... (not a token acct)"}`);
-    console.log(`  Same owner?     : ${sameOwner ? "YES 🚨" : "No"}`);
+  if (funded.size > 0) {
+    console.log("  Seeded wallets:");
+    for (const [addr, info] of [...funded.entries()].sort((a, b) => a[1].firstSeen - b[1].firstSeen)) {
+      const lbl = KNOWN_CHILDREN[addr] ? `  ← ${KNOWN_CHILDREN[addr]}` : "";
+      console.log(`    ${addr}  +${info.solReceived.toFixed(4)} SOL  ${fmt(info.firstSeen)}${lbl}`);
+    }
   }
 
-  console.log(`\n  Holder #1 transacted with Holder #4 operator? ${h1LinkedToOp ? "YES ⚠️" : "No"}`);
-  console.log(`  Recipient transacted with Holder #4 operator? ${recipLinkedToOp ? "YES ⚠️" : "No"}`);
-
-  const connectedCount = [sameOwner, h1LinkedToOp, recipLinkedToOp].filter(Boolean).length;
-  console.log(`\n  Connection score: ${connectedCount}/3 signals linked to Holder #4 operator.`);
-  if (connectedCount >= 2) {
-    console.log("  🚨 HIGH CONFIDENCE: These wallets are likely operated by the same actor.");
-  } else if (connectedCount === 1) {
-    console.log("  ⚠️  MODERATE: Partial connection found — possible shared actor.");
-  } else {
-    console.log("  ✅ LOW: No direct connection signals found.");
+  // 4. Token activity — does this wallet directly touch the token?
+  console.log("\n[4/4] Checking if FireuLYd4 directly interacted with the token...");
+  const recentSigs = await getNewestSigs(TARGET, 100);
+  let tokenTxCount = 0;
+  for (const s of recentSigs.slice(0, 30)) {
+    await new Promise(r => setTimeout(r, 150));
+    const tx = await getTx(s.signature);
+    const balances = [...(tx?.meta?.preTokenBalances ?? []), ...(tx?.meta?.postTokenBalances ?? [])];
+    if (balances.some(b => b.mint === tokenMint)) tokenTxCount++;
   }
-  console.log(`${"═".repeat(65)}`);
+  console.log(`      ${tokenTxCount > 0 ? `⚠️  ${tokenTxCount} transactions directly involved the token mint.` : "✅ No direct token interactions found — pure infrastructure wallet."}`);
+
+  // Final verdict
+  const rootAddr  = chain[chain.length - 1]?.addr ?? "unknown";
+  const rootLabel = KNOWN[rootAddr] ?? "unknown origin";
+  const childCount = funded.size;
+
+  console.log("\n" + "═".repeat(65));
+  console.log("  VERDICT");
+  console.log("═".repeat(65));
+  console.log(`\n  Wallet age    : ${birthTime ? fmt(birthTime) : "unknown"}`);
+  console.log(`  Chain length  : ${chain.length - 1} hop(s) to known entity or genesis`);
+  console.log(`  Root origin   : ${rootAddr}`);
+  console.log(`  Root label    : ${rootLabel}`);
+  console.log(`  Wallets seeded: ${childCount} (in sampled txs)`);
+  console.log(`  Known children: Holder #1 (102M) + Holder #16 (12.7M) = 114.7M tokens`);
+  console.log(`  Token direct  : ${tokenTxCount > 0 ? "Yes ⚠️" : "No"}`);
+
+  if (chain.some(c => c.label?.includes("Pump.fun Bundler") || c.label?.includes("Bundler"))) {
+    console.log("\n  🚨 BUNDLER CONFIRMED — chain traces to a known Pump.fun bundler.");
+  } else if (chain.some(c => c.label?.includes("Pump.fun"))) {
+    console.log("\n  ⚠️  PUMP.FUN LINKED — chain touches Pump.fun infrastructure.");
+  } else if (childCount >= 3) {
+    console.log("\n  ⚠️  OPERATOR WALLET — seeded multiple child wallets. Likely coordinated.");
+  } else {
+    console.log("\n  ℹ️  No known bundler in chain. Private operator wallet — not automated infra.");
+  }
+  console.log("═".repeat(65));
 }
 
 main();
