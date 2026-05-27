@@ -213,30 +213,32 @@ export async function getDexScreenerPair(mint) {
 // Fetches 24h hourly candles for the token's best liquidity pair.
 // Short TTL matches the price data cache so both stay in sync.
 export async function getTokenChart(mint) {
-  return getCached(`chart:${mint}`, TTL_30S, async () => {
+  return getCached(`chart_gt:${mint}`, TTL_30S, async () => {
     try {
       const pair = await getDexScreenerPair(mint);
       if (!pair?.pairAddress) return { candles: [], direction: null };
 
-      const now  = Math.floor(Date.now() / 1000);
-      const from = now - 86_400; // 24 h ago
-
+      // GeckoTerminal free OHLCV API — 24 hourly candles
       const res = await fetch(
-        `https://api.dexscreener.com/latest/dex/candles/solana/${pair.pairAddress}` +
-        `?from=${from}&to=${now}&resolution=60`,
+        `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pair.pairAddress}/ohlcv/hour` +
+        `?aggregate=1&limit=24`,
+        { headers: { Accept: "application/json;version=20230302" } },
       );
       if (!res.ok) return { candles: [], direction: null };
       const json = await res.json();
-      const raw = json.candles ?? [];
+      // Each entry: [timestamp_s, open, high, low, close, volume]
+      const raw = json?.data?.attributes?.ohlcv_list ?? [];
       if (!raw.length) return { candles: [], direction: null };
 
-      const first = raw[0].c ?? raw[0].o;
-      const last  = raw[raw.length - 1].c;
+      // GeckoTerminal returns newest-first; reverse to chronological order
+      const chronological = [...raw].reverse();
+      const first = chronological[0][1]; // open of oldest candle
+      const last  = chronological[chronological.length - 1][4]; // close of newest
       const direction =
         last > first ? "up" : last < first ? "down" : "flat";
 
       return {
-        candles: raw.map((c) => ({ t: c.t, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v })),
+        candles: chronological.map(([t, o, h, l, c, v]) => ({ t, o, h, l, c, v })),
         direction,
       };
     } catch {

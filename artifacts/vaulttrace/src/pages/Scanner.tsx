@@ -1007,6 +1007,12 @@ export default function Scanner() {
                         >
                           {fmtPrice(priceData.price)}
                         </p>
+                        {/* 24h sparkline mounted directly under the price value */}
+                        {chartData != null && chartData.candles.length > 0 && (
+                          <div className="mt-1.5 flex justify-center">
+                            <PriceSparkline data={chartData} />
+                          </div>
+                        )}
                       </div>
                     )}
                     {priceData.marketCap !== null && (
@@ -1027,9 +1033,6 @@ export default function Scanner() {
                           {fmtShortUsd(priceData.volume24h)}
                         </p>
                       </div>
-                    )}
-                    {chartData && chartData.candles.length > 0 && (
-                      <PriceSparkline data={chartData} />
                     )}
                   </div>
                   {priceUpdatedAt !== null && (
