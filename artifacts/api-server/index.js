@@ -209,6 +209,42 @@ export async function getDexScreenerPair(mint) {
   });
 }
 
+// ── Token Chart / Sparkline (DexScreener OHLCV) ───────────────────────────
+// Fetches 24h hourly candles for the token's best liquidity pair.
+// Short TTL matches the price data cache so both stay in sync.
+export async function getTokenChart(mint) {
+  return getCached(`chart:${mint}`, TTL_30S, async () => {
+    try {
+      const pair = await getDexScreenerPair(mint);
+      if (!pair?.pairAddress) return { candles: [], direction: null };
+
+      const now  = Math.floor(Date.now() / 1000);
+      const from = now - 86_400; // 24 h ago
+
+      const res = await fetch(
+        `https://api.dexscreener.com/latest/dex/candles/solana/${pair.pairAddress}` +
+        `?from=${from}&to=${now}&resolution=60`,
+      );
+      if (!res.ok) return { candles: [], direction: null };
+      const json = await res.json();
+      const raw = json.candles ?? [];
+      if (!raw.length) return { candles: [], direction: null };
+
+      const first = raw[0].c ?? raw[0].o;
+      const last  = raw[raw.length - 1].c;
+      const direction =
+        last > first ? "up" : last < first ? "down" : "flat";
+
+      return {
+        candles: raw.map((c) => ({ t: c.t, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v })),
+        direction,
+      };
+    } catch {
+      return { candles: [], direction: null };
+    }
+  });
+}
+
 // Exported so server.js can surface cache health
 export function cacheStats() {
   let alive = 0, expired = 0;

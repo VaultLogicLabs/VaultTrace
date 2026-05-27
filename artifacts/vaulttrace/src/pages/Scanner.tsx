@@ -1,4 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  Tooltip,
+} from "recharts";
 import { RiskGauge } from "@/components/RiskGauge";
 import { TerminalFeed, ScanEvent } from "@/components/TerminalFeed";
 import { HoldersTable } from "@/components/HoldersTable";
@@ -67,6 +73,20 @@ interface TokenPriceData {
   price: number | null;
   marketCap: number | null;
   volume24h: number | null;
+}
+
+interface Candle {
+  t: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+}
+
+interface TokenChartData {
+  candles: Candle[];
+  direction: "up" | "down" | "flat" | null;
 }
 
 interface ScanReport {
@@ -312,6 +332,64 @@ function SignalRow({ signal }: { signal: RiskSignal }) {
         +{signal.pts}
       </span>
       <span className="text-xs text-slate-300 font-mono">{signal.label}</span>
+    </div>
+  );
+}
+
+// ── Price Sparkline ─────────────────────────────────────────────────────────
+function PriceSparkline({ data }: { data: TokenChartData }) {
+  if (!data.candles.length) return null;
+
+  const isUp   = data.direction === "up";
+  const isDown = data.direction === "down";
+  const color  = isUp ? "#22c55e" : isDown ? "#f87171" : "#94a3b8";
+  const gradId = `sparkGrad-${isUp ? "up" : isDown ? "down" : "flat"}`;
+
+  const chartPoints = data.candles.map((c) => ({ c: c.c }));
+
+  return (
+    <div className="flex flex-col items-center">
+      <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">24H CHART</p>
+      <div style={{ width: 120, height: 40 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={chartPoints} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
+            <defs>
+              <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%"  stopColor={color} stopOpacity={0.25} />
+                <stop offset="95%" stopColor={color} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <Tooltip
+              content={({ active, payload }) => {
+                if (!active || !payload?.length) return null;
+                const val = payload[0].value as number;
+                return (
+                  <div className="bg-slate-900 border border-slate-700 rounded px-2 py-1">
+                    <span className="text-[10px] font-mono text-slate-200">
+                      {val < 0.000001
+                        ? `$${val.toExponential(2)}`
+                        : val < 0.0001
+                        ? `$${val.toPrecision(3)}`
+                        : val < 1
+                        ? `$${val.toFixed(6)}`
+                        : `$${val.toFixed(2)}`}
+                    </span>
+                  </div>
+                );
+              }}
+            />
+            <Area
+              type="monotone"
+              dataKey="c"
+              stroke={color}
+              strokeWidth={1.5}
+              fill={`url(#${gradId})`}
+              dot={false}
+              isAnimationActive={false}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }
@@ -582,6 +660,7 @@ export default function Scanner() {
   const [events, setEvents] = useState<ScanEvent[]>([]);
   const [report, setReport] = useState<ScanReport | null>(null);
   const [priceData, setPriceData] = useState<TokenPriceData | null>(null);
+  const [chartData, setChartData] = useState<TokenChartData | null>(null);
   const [priceUpdatedAt, setPriceUpdatedAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [errorMsg, setErrorMsg] = useState("");
@@ -592,6 +671,18 @@ export default function Scanner() {
   const esRef = useRef<EventSource | null>(null);
   const prevPriceDataRef = useRef<TokenPriceData | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchChartData = useCallback(async (mintAddr: string) => {
+    try {
+      const res = await fetch(`/api/token/${encodeURIComponent(mintAddr)}/chart`);
+      if (res.ok) {
+        const data = (await res.json()) as TokenChartData;
+        setChartData(data);
+      }
+    } catch {
+      // non-critical — chart is a visual enhancement
+    }
+  }, []);
 
   const fetchPriceData = useCallback(async (mintAddr: string) => {
     try {
@@ -672,6 +763,7 @@ export default function Scanner() {
     setEvents([]);
     setReport(null);
     setPriceData(null);
+    setChartData(null);
     setPriceUpdatedAt(null);
     setErrorMsg("");
     prevPriceDataRef.current = null;
@@ -704,8 +796,9 @@ export default function Scanner() {
               return [completedReport, ...deduped].slice(0, 200);
             });
           });
-        // Fetch price data asynchronously — doesn't block the scan result
+        // Fetch price + chart data asynchronously — doesn't block the scan result
         fetchPriceData(completedReport.mint);
+        fetchChartData(completedReport.mint);
       } else if (ev.type === "error") {
         setErrorMsg((ev as { type: "error"; message: string }).message);
         setStatus("error");
@@ -739,24 +832,27 @@ export default function Scanner() {
     setEvents([]);
     setErrorMsg("");
     setPriceData(null);
+    setChartData(null);
     setPriceUpdatedAt(null);
     prevPriceDataRef.current = null;
     setPriceFlash(null);
     setMcFlash(null);
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
     fetchPriceData(r.mint);
-  }, [fetchPriceData]);
+    fetchChartData(r.mint);
+  }, [fetchPriceData, fetchChartData]);
 
-  // Auto-refresh price data every 60s while a completed report is on screen.
+  // Auto-refresh price + chart data every 60s while a completed report is on screen.
   // Stops automatically when the user starts a new scan, navigates away, or
   // unmounts the component.
   useEffect(() => {
     if (status !== "complete" || !report) return;
     const id = window.setInterval(() => {
       fetchPriceData(report.mint);
+      fetchChartData(report.mint);
     }, 60_000);
     return () => window.clearInterval(id);
-  }, [status, report, fetchPriceData]);
+  }, [status, report, fetchPriceData, fetchChartData]);
 
   // Tick once per second so the "updated Xs ago" label stays accurate.
   useEffect(() => {
@@ -911,6 +1007,9 @@ export default function Scanner() {
                           {fmtShortUsd(priceData.volume24h)}
                         </p>
                       </div>
+                    )}
+                    {chartData && chartData.candles.length > 0 && (
+                      <PriceSparkline data={chartData} />
                     )}
                   </div>
                   {priceUpdatedAt !== null && (

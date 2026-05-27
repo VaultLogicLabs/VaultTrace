@@ -1,5 +1,5 @@
 import express from "express";
-import { runScan, cacheStats, cacheClear, getTokenPrice } from "./index.js";
+import { runScan, cacheStats, cacheClear, getTokenPrice, getTokenChart } from "./index.js";
 import {
   loadHistory,
   addReport,
@@ -138,6 +138,24 @@ app.get("/api/token/:mint/price", async (req, res) => {
   }
 });
 
+// ── Token chart endpoint ───────────────────────────────────────────────────
+// GET /api/token/:mint/chart
+// Returns { candles: [{t,o,h,l,c,v}], direction: "up"|"down"|"flat"|null }
+// Candles cover the last 24 h at 1-hour resolution from DexScreener.
+app.get("/api/token/:mint/chart", async (req, res) => {
+  const { mint } = req.params;
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) {
+    return res.status(400).json({ error: "Invalid mint address format." });
+  }
+  try {
+    const data = await getTokenChart(mint);
+    res.json(data);
+  } catch (err) {
+    console.error(`[chart] error for ${mint}:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Scan history endpoints ────────────────────────────────────────────────
 // Persistent, cross-device scan history. Backed by a JSON file under data/.
 // GET    /api/history           → list of recent scan reports (newest first)
@@ -196,6 +214,7 @@ app.use((_req, res) => {
       "DELETE /api/cache",
       "GET  /api/scan/:mintAddress?top=20&depth=6",
       "GET  /api/token/:mint/price",
+      "GET  /api/token/:mint/chart",
       "GET  /api/history",
       "POST /api/history",
       "DELETE /api/history",
