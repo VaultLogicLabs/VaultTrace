@@ -60,6 +60,7 @@ interface ClusterInfo {
 interface TokenMetadata {
   name: string | null;
   symbol: string | null;
+  logoUri: string | null;
 }
 
 interface ScanReport {
@@ -435,22 +436,32 @@ export default function Scanner() {
           <div className="space-y-6 animate-in fade-in duration-500">
 
             {/* Token identity header */}
-            <div className="text-center">
-              <h2
-                className="text-3xl font-black font-mono tracking-tight"
-                style={{ color: "#22C55E" }}
-              >
-                {report.metadata?.name
-                  ? report.metadata.symbol
-                    ? `${report.metadata.name} ($${report.metadata.symbol})`
-                    : report.metadata.name
-                  : report.mint.slice(0, 8) + "…"}
-              </h2>
-              {(report.metadata?.name || report.metadata?.symbol) && (
+            <div className="flex flex-col items-center gap-3">
+              {report.metadata?.logoUri && (
+                <img
+                  src={report.metadata.logoUri}
+                  alt={report.metadata.name ?? "token logo"}
+                  className="w-16 h-16 rounded-full border-2 border-slate-700 object-cover shadow-lg"
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                />
+              )}
+              <div className="text-center">
+                <h2
+                  className="text-3xl font-black font-mono tracking-tight"
+                  style={{ color: "#22C55E" }}
+                >
+                  {report.metadata?.name
+                    ? report.metadata.symbol
+                      ? `${report.metadata.name} ($${report.metadata.symbol})`
+                      : report.metadata.name
+                    : report.metadata?.symbol
+                    ? `$${report.metadata.symbol}`
+                    : report.mint.slice(0, 8) + "…"}
+                </h2>
                 <p className="mt-1 text-xs font-mono text-slate-600 tracking-widest">
                   {report.mint.slice(0, 20)}…
                 </p>
-              )}
+              </div>
             </div>
 
             {/* Risk Score + Summary row */}

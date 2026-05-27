@@ -279,13 +279,22 @@ async function getTokenMetadata(mint) {
         }),
       });
       const json = await res.json();
-      const meta = json.result?.content?.metadata ?? {};
+      const result = json.result ?? {};
+      const meta = result.content?.metadata ?? {};
+      const links = result.content?.links ?? {};
+      const files = result.content?.files ?? [];
+      const logoUri =
+        links.image ??
+        files.find((f) => f.cdn_uri || f.uri)?.cdn_uri ??
+        files.find((f) => f.cdn_uri || f.uri)?.uri ??
+        null;
       return {
-        name:   meta.name   ?? null,
-        symbol: meta.symbol ?? null,
+        name:    meta.name    ?? null,
+        symbol:  meta.symbol  ?? null,
+        logoUri: logoUri      ?? null,
       };
     } catch {
-      return { name: null, symbol: null };
+      return { name: null, symbol: null, logoUri: null };
     }
   });
 }
