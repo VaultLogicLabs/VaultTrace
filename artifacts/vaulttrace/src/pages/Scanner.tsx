@@ -84,9 +84,13 @@ interface ScanReport {
 
 type Status = "idle" | "scanning" | "complete" | "error";
 
-// ── localStorage history ────────────────────────────────────────────────────
+// ── Scan history (server-backed) ────────────────────────────────────────────
+// History is persisted on the API server under /api/history so it survives
+// across browsers and devices. A legacy localStorage cache is migrated to the
+// server on first load, then removed.
 const HISTORY_KEY = "vaulttrace_scan_history";
-const MAX_HISTORY = 10;
+const HISTORY_MIGRATED_KEY = "vaulttrace_history_migrated_v1";
+const HISTORY_ENDPOINT = "/api/history";
 
 // ── Logo cache (URI → { data: base64 data URL, ts: last-accessed ms }) ──────
 const LOGO_CACHE_KEY = "vaulttrace_logo_cache";
@@ -154,46 +158,65 @@ async function fetchLogoAsDataUrl(uri: string): Promise<string | null> {
   }
 }
 
-function loadHistory(): ScanReport[] {
+function readLegacyLocalHistory(): ScanReport[] {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
     if (!raw) return [];
-    return JSON.parse(raw) as ScanReport[];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as ScanReport[]) : [];
   } catch {
     return [];
   }
 }
 
-async function saveHistory(history: ScanReport[]): Promise<void> {
-  // Proactive: check storage quota and trim oldest entries before writing
-  try {
-    const { usage = 0, quota = Infinity } = (await navigator.storage?.estimate?.()) ?? {};
-    if (quota > 0 && usage / quota > STORAGE_HIGH_WATERMARK) {
-      history = history.slice(0, Math.max(1, Math.floor(MAX_HISTORY / 2)));
-    }
-  } catch {
-    // estimate() unavailable — proceed without proactive trim
-  }
-
-  try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-  } catch {
-    // Storage still full — drop oldest entries and retry once
-    const trimmed = history.slice(0, Math.max(1, Math.floor(MAX_HISTORY / 4)));
-    try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(trimmed));
-    } catch {
-      console.warn("[VaultTrace] Scan history: storage critically full, history save skipped.");
-    }
-  }
+async function fetchServerHistory(): Promise<ScanReport[]> {
+  const res = await fetch(HISTORY_ENDPOINT);
+  if (!res.ok) throw new Error(`Failed to load history (${res.status})`);
+  const data = await res.json();
+  return Array.isArray(data) ? (data as ScanReport[]) : [];
 }
 
-function pushToHistory(report: ScanReport, prev: ScanReport[]): ScanReport[] {
-  // Remove any existing entry for the same mint so we don't duplicate
-  const deduped = prev.filter((r) => r.mint !== report.mint);
-  const next = [report, ...deduped].slice(0, MAX_HISTORY);
-  void saveHistory(next);
-  return next;
+async function postReport(report: ScanReport): Promise<ScanReport[]> {
+  const res = await fetch(HISTORY_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(report),
+  });
+  if (!res.ok) throw new Error(`Failed to save history (${res.status})`);
+  const data = await res.json();
+  return Array.isArray(data) ? (data as ScanReport[]) : [];
+}
+
+async function clearServerHistory(): Promise<void> {
+  const res = await fetch(HISTORY_ENDPOINT, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to clear history (${res.status})`);
+}
+
+async function migrateLocalHistoryOnce(): Promise<ScanReport[] | null> {
+  if (typeof window === "undefined") return null;
+  if (localStorage.getItem(HISTORY_MIGRATED_KEY)) return null;
+  const legacy = readLegacyLocalHistory();
+  if (legacy.length === 0) {
+    localStorage.setItem(HISTORY_MIGRATED_KEY, "1");
+    localStorage.removeItem(HISTORY_KEY);
+    return null;
+  }
+  try {
+    const res = await fetch(`${HISTORY_ENDPOINT}/migrate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(legacy),
+    });
+    if (!res.ok) throw new Error(`migrate failed (${res.status})`);
+    const merged = await res.json();
+    localStorage.setItem(HISTORY_MIGRATED_KEY, "1");
+    localStorage.removeItem(HISTORY_KEY);
+    return Array.isArray(merged) ? (merged as ScanReport[]) : null;
+  } catch (err) {
+    // Leave legacy data in place so we can retry on the next load
+    console.warn("[VaultTrace] History migration deferred:", err);
+    return null;
+  }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -474,7 +497,7 @@ export default function Scanner() {
   const [report, setReport] = useState<ScanReport | null>(null);
   const [priceData, setPriceData] = useState<TokenPriceData | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
-  const [history, setHistory] = useState<ScanReport[]>(() => loadHistory());
+  const [history, setHistory] = useState<ScanReport[]>([]);
   const esRef = useRef<EventSource | null>(null);
 
   const fetchPriceData = useCallback(async (mintAddr: string) => {
@@ -490,13 +513,25 @@ export default function Scanner() {
     }
   }, []);
 
-  // Keep history in sync if another tab updates it
+  // Load history from the server on mount (migrating any legacy
+  // localStorage entries on the first run).
   useEffect(() => {
-    const handler = (e: StorageEvent) => {
-      if (e.key === HISTORY_KEY) setHistory(loadHistory());
-    };
-    window.addEventListener("storage", handler);
-    return () => window.removeEventListener("storage", handler);
+    let cancelled = false;
+    (async () => {
+      try {
+        const migrated = await migrateLocalHistoryOnce();
+        if (cancelled) return;
+        if (migrated) {
+          setHistory(migrated);
+          return;
+        }
+        const serverHistory = await fetchServerHistory();
+        if (!cancelled) setHistory(serverHistory);
+      } catch (err) {
+        console.warn("[VaultTrace] Could not load scan history:", err);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const addEvent = useCallback((ev: ScanEvent) => {
@@ -534,8 +569,17 @@ export default function Scanner() {
         setStatus("complete");
         addEvent(ev);
         es.close();
-        // Save to history
-        setHistory((prev) => pushToHistory(completedReport, prev));
+        // Persist to server-side history; fall back to optimistic local update
+        // if the request fails so the user still sees their scan in the panel.
+        postReport(completedReport)
+          .then((next) => setHistory(next))
+          .catch((err) => {
+            console.warn("[VaultTrace] Failed to save scan to history:", err);
+            setHistory((prev) => {
+              const deduped = prev.filter((r) => r.mint !== completedReport.mint);
+              return [completedReport, ...deduped].slice(0, 10);
+            });
+          });
         // Fetch price data asynchronously — doesn't block the scan result
         fetchPriceData(completedReport.mint);
       } else if (ev.type === "error") {
@@ -574,8 +618,10 @@ export default function Scanner() {
   }, [fetchPriceData]);
 
   const clearHistory = useCallback(() => {
-    localStorage.removeItem(HISTORY_KEY);
     setHistory([]);
+    clearServerHistory().catch((err) => {
+      console.warn("[VaultTrace] Failed to clear server history:", err);
+    });
   }, []);
 
   const clusterRanks = report?.clusters.flatMap((c) => c.rows) ?? [];

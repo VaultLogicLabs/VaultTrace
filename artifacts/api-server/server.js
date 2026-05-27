@@ -1,15 +1,21 @@
 import express from "express";
 import { runScan, cacheStats, cacheClear, getTokenPrice } from "./index.js";
+import {
+  loadHistory,
+  addReport,
+  clearHistory,
+  mergeReports,
+} from "./history.js";
 
 const app  = express();
 const PORT = process.env.PORT ?? 3000;
 
 // ── Middleware ─────────────────────────────────────────────────────────────
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
@@ -132,6 +138,54 @@ app.get("/api/token/:mint/price", async (req, res) => {
   }
 });
 
+// ── Scan history endpoints ────────────────────────────────────────────────
+// Persistent, cross-device scan history. Backed by a JSON file under data/.
+// GET    /api/history           → list of recent scan reports (newest first)
+// POST   /api/history           → upsert a single report (dedupes by mint)
+// DELETE /api/history           → clear all history
+// POST   /api/history/migrate   → merge an array of client-stored reports
+app.get("/api/history", async (_req, res) => {
+  try {
+    const history = await loadHistory();
+    res.json(history);
+  } catch (err) {
+    console.error("[history] load error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/history", async (req, res) => {
+  try {
+    const next = await addReport(req.body);
+    res.json(next);
+  } catch (err) {
+    const code = err.statusCode ?? 500;
+    if (code >= 500) console.error("[history] add error:", err.message);
+    res.status(code).json({ error: err.message });
+  }
+});
+
+app.delete("/api/history", async (_req, res) => {
+  try {
+    const next = await clearHistory();
+    res.json(next);
+  } catch (err) {
+    console.error("[history] clear error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/history/migrate", async (req, res) => {
+  try {
+    const next = await mergeReports(req.body);
+    res.json(next);
+  } catch (err) {
+    const code = err.statusCode ?? 500;
+    if (code >= 500) console.error("[history] migrate error:", err.message);
+    res.status(code).json({ error: err.message });
+  }
+});
+
 // ── 404 fallback ───────────────────────────────────────────────────────────
 app.use((_req, res) => {
   res.status(404).json({
@@ -142,6 +196,10 @@ app.use((_req, res) => {
       "DELETE /api/cache",
       "GET  /api/scan/:mintAddress?top=20&depth=6",
       "GET  /api/token/:mint/price",
+      "GET  /api/history",
+      "POST /api/history",
+      "DELETE /api/history",
+      "POST /api/history/migrate",
     ],
   });
 });
