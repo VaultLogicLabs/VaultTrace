@@ -121,11 +121,13 @@ async function getCached(key, ttl, fn) {
 }
 
 // ── Token Price (DexScreener) ──────────────────────────────────────────────
-// Short TTL: price data changes frequently.
-const TTL_5M = 300_000;
+// Short TTL: price data changes frequently and the results page auto-refreshes
+// every 60s, so we keep the cache below that interval to ensure each refresh
+// pulls a genuinely fresh quote while still absorbing duplicate concurrent hits.
+const TTL_30S = 30_000;
 
 export async function getTokenPrice(mint) {
-  return getCached(`price:${mint}`, TTL_5M, async () => {
+  return getCached(`price:${mint}`, TTL_30S, async () => {
     try {
       const res = await fetch(
         `https://api.dexscreener.com/latest/dex/tokens/${mint}`,

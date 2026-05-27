@@ -243,6 +243,15 @@ function fmtShortUsd(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+function fmtAgo(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return `${h}h ago`;
+}
+
 function fmtIso(iso: string) {
   return new Date(iso).toLocaleString("en-US", {
     month: "short", day: "numeric",
@@ -496,17 +505,19 @@ export default function Scanner() {
   const [events, setEvents] = useState<ScanEvent[]>([]);
   const [report, setReport] = useState<ScanReport | null>(null);
   const [priceData, setPriceData] = useState<TokenPriceData | null>(null);
+  const [priceUpdatedAt, setPriceUpdatedAt] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [errorMsg, setErrorMsg] = useState("");
   const [history, setHistory] = useState<ScanReport[]>([]);
   const esRef = useRef<EventSource | null>(null);
 
   const fetchPriceData = useCallback(async (mintAddr: string) => {
-    setPriceData(null);
     try {
       const res = await fetch(`/api/token/${encodeURIComponent(mintAddr)}/price`);
       if (res.ok) {
         const data = (await res.json()) as TokenPriceData;
         setPriceData(data);
+        setPriceUpdatedAt(Date.now());
       }
     } catch {
       // silently ignore — price is non-critical
@@ -553,6 +564,7 @@ export default function Scanner() {
     setEvents([]);
     setReport(null);
     setPriceData(null);
+    setPriceUpdatedAt(null);
     setErrorMsg("");
 
     const url = `/api/scan/${encodeURIComponent(trimmed)}/stream?top=${topN}&depth=${depth}`;
@@ -614,8 +626,28 @@ export default function Scanner() {
     setStatus("complete");
     setEvents([]);
     setErrorMsg("");
+    setPriceData(null);
+    setPriceUpdatedAt(null);
     fetchPriceData(r.mint);
   }, [fetchPriceData]);
+
+  // Auto-refresh price data every 60s while a completed report is on screen.
+  // Stops automatically when the user starts a new scan, navigates away, or
+  // unmounts the component.
+  useEffect(() => {
+    if (status !== "complete" || !report) return;
+    const id = window.setInterval(() => {
+      fetchPriceData(report.mint);
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, [status, report, fetchPriceData]);
+
+  // Tick once per second so the "updated Xs ago" label stays accurate.
+  useEffect(() => {
+    if (status !== "complete" || priceUpdatedAt === null) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [status, priceUpdatedAt]);
 
   const clearHistory = useCallback(() => {
     setHistory([]);
@@ -732,32 +764,39 @@ export default function Scanner() {
                 priceData.marketCap !== null ||
                 priceData.volume24h !== null
               ) && (
-                <div className="flex items-center justify-center gap-6 mt-4 flex-wrap">
-                  {priceData.price !== null && (
-                    <div className="text-center">
-                      <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">PRICE</p>
-                      <p className="text-sm font-mono font-semibold text-slate-200">
-                        {fmtPrice(priceData.price)}
-                      </p>
-                    </div>
+                <>
+                  <div className="flex items-center justify-center gap-6 mt-4 flex-wrap">
+                    {priceData.price !== null && (
+                      <div className="text-center">
+                        <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">PRICE</p>
+                        <p className="text-sm font-mono font-semibold text-slate-200">
+                          {fmtPrice(priceData.price)}
+                        </p>
+                      </div>
+                    )}
+                    {priceData.marketCap !== null && (
+                      <div className="text-center">
+                        <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">MARKET CAP</p>
+                        <p className="text-sm font-mono font-semibold text-slate-200">
+                          {fmtShortUsd(priceData.marketCap)}
+                        </p>
+                      </div>
+                    )}
+                    {priceData.volume24h !== null && (
+                      <div className="text-center">
+                        <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">24H VOLUME</p>
+                        <p className="text-sm font-mono font-semibold text-slate-200">
+                          {fmtShortUsd(priceData.volume24h)}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                  {priceUpdatedAt !== null && (
+                    <p className="mt-2 text-[10px] font-mono text-slate-500 tracking-wider">
+                      updated {fmtAgo(nowMs - priceUpdatedAt)}
+                    </p>
                   )}
-                  {priceData.marketCap !== null && (
-                    <div className="text-center">
-                      <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">MARKET CAP</p>
-                      <p className="text-sm font-mono font-semibold text-slate-200">
-                        {fmtShortUsd(priceData.marketCap)}
-                      </p>
-                    </div>
-                  )}
-                  {priceData.volume24h !== null && (
-                    <div className="text-center">
-                      <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">24H VOLUME</p>
-                      <p className="text-sm font-mono font-semibold text-slate-200">
-                        {fmtShortUsd(priceData.volume24h)}
-                      </p>
-                    </div>
-                  )}
-                </div>
+                </>
               )}
             </div>
 
