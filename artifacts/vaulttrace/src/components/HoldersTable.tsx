@@ -15,6 +15,8 @@ interface HoldersTableProps {
   sniperRanks: number[];
   clusterRanks: number[];
   topN: number;
+  hoveredParentWallet?: string | null;
+  onHoverParentWallet?: (wallet: string | null) => void;
 }
 
 function short(addr: string) {
@@ -37,7 +39,14 @@ function fmtTokens(n: number) {
   return n.toFixed(0);
 }
 
-export function HoldersTable({ holders, sniperRanks, clusterRanks, topN }: HoldersTableProps) {
+export function HoldersTable({
+  holders,
+  sniperRanks,
+  clusterRanks,
+  topN,
+  hoveredParentWallet = null,
+  onHoverParentWallet,
+}: HoldersTableProps) {
   const sniperSet = new Set(sniperRanks);
   const clusterSet = new Set(clusterRanks);
 
@@ -78,17 +87,23 @@ export function HoldersTable({ holders, sniperRanks, clusterRanks, topN }: Holde
               const isSniper = sniperSet.has(h.rank);
               const isCluster = clusterSet.has(h.rank);
               const hasLabel = !!h.funderLabel;
+              const isFunderHighlighted =
+                !!hoveredParentWallet && h.funder === hoveredParentWallet;
 
-              const rowClass = isSniper
+              const baseRowClass = isSniper
                 ? "bg-red-950/30 border-l-2 border-l-red-500"
                 : isCluster
                 ? "bg-yellow-950/20 border-l-2 border-l-yellow-500"
+                : "border-l-2 border-l-transparent";
+
+              const highlightClass = isFunderHighlighted
+                ? "bg-cyan-950/40 border-l-cyan-400"
                 : "";
 
               return (
                 <tr
                   key={h.rank}
-                  className={`border-b border-slate-800/60 hover:bg-slate-800/40 transition-colors ${rowClass}`}
+                  className={`border-b border-slate-800/60 hover:bg-slate-800/40 transition-colors duration-150 ${baseRowClass} ${highlightClass}`}
                 >
                   <td className="px-4 py-2.5 text-right text-slate-500">{h.rank}</td>
                   <td className="px-4 py-2.5 text-slate-300 whitespace-nowrap">
@@ -130,7 +145,19 @@ export function HoldersTable({ holders, sniperRanks, clusterRanks, topN }: Holde
                   <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap">
                     {h.buyTime ? fmt(h.buyTime) : "—"}
                   </td>
-                  <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap">
+                  <td
+                    className="px-4 py-2.5 text-slate-400 whitespace-nowrap"
+                    onMouseEnter={
+                      h.funder && onHoverParentWallet
+                        ? () => onHoverParentWallet(h.funder)
+                        : undefined
+                    }
+                    onMouseLeave={
+                      h.funder && onHoverParentWallet
+                        ? () => onHoverParentWallet(null)
+                        : undefined
+                    }
+                  >
                     {h.funder ? (
                       <a
                         href={`https://solscan.io/account/${h.funder}`}

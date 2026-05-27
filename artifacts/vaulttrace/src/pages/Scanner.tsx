@@ -518,6 +518,7 @@ export default function Scanner() {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [errorMsg, setErrorMsg] = useState("");
   const [history, setHistory] = useState<ScanReport[]>([]);
+  const [hoveredParentWallet, setHoveredParentWallet] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
   const fetchPriceData = useCallback(async (mintAddr: string) => {
@@ -951,6 +952,8 @@ export default function Scanner() {
                 sniperRanks={report.snipers ?? []}
                 clusterRanks={clusterRanks}
                 topN={topN}
+                hoveredParentWallet={hoveredParentWallet}
+                onHoverParentWallet={setHoveredParentWallet}
               />
             )}
 
