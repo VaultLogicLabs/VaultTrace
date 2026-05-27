@@ -96,6 +96,7 @@ const HISTORY_ENDPOINT = "/api/history";
 const LOGO_CACHE_KEY = "vaulttrace_logo_cache";
 const MAX_LOGO_CACHE = 30;
 const STORAGE_HIGH_WATERMARK = 0.85; // trim proactively above this ratio
+const LOGO_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 interface LogoCacheEntry {
   data: string;
@@ -107,7 +108,15 @@ function loadLogoCache(): LogoCache {
   try {
     const raw = localStorage.getItem(LOGO_CACHE_KEY);
     if (!raw) return {};
-    return JSON.parse(raw) as LogoCache;
+    const parsed = JSON.parse(raw) as LogoCache;
+    const now = Date.now();
+    const fresh: LogoCache = {};
+    for (const [key, entry] of Object.entries(parsed)) {
+      if (entry && typeof entry.ts === "number" && now - entry.ts <= LOGO_CACHE_MAX_AGE_MS) {
+        fresh[key] = entry;
+      }
+    }
+    return fresh;
   } catch {
     return {};
   }
