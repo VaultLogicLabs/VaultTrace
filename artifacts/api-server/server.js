@@ -1,5 +1,5 @@
 import express from "express";
-import { runScan, cacheStats, cacheClear } from "./index.js";
+import { runScan, cacheStats, cacheClear, getTokenPrice } from "./index.js";
 
 const app  = express();
 const PORT = process.env.PORT ?? 3000;
@@ -114,6 +114,24 @@ app.get("/api/scan/:mintAddress", async (req, res) => {
   }
 });
 
+// ── Token price endpoint ───────────────────────────────────────────────────
+// GET /api/token/:mint/price
+// Returns { price, marketCap, volume24h } sourced from DexScreener.
+// Fields are null when unavailable. Cached for 5 minutes server-side.
+app.get("/api/token/:mint/price", async (req, res) => {
+  const { mint } = req.params;
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) {
+    return res.status(400).json({ error: "Invalid mint address format." });
+  }
+  try {
+    const data = await getTokenPrice(mint);
+    res.json(data);
+  } catch (err) {
+    console.error(`[price] error for ${mint}:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── 404 fallback ───────────────────────────────────────────────────────────
 app.use((_req, res) => {
   res.status(404).json({
@@ -123,6 +141,7 @@ app.use((_req, res) => {
       "GET  /api/cache",
       "DELETE /api/cache",
       "GET  /api/scan/:mintAddress?top=20&depth=6",
+      "GET  /api/token/:mint/price",
     ],
   });
 });

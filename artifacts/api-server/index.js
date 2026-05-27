@@ -120,6 +120,35 @@ async function getCached(key, ttl, fn) {
   return value;
 }
 
+// ── Token Price (DexScreener) ──────────────────────────────────────────────
+// Short TTL: price data changes frequently.
+const TTL_5M = 300_000;
+
+export async function getTokenPrice(mint) {
+  return getCached(`price:${mint}`, TTL_5M, async () => {
+    try {
+      const res = await fetch(
+        `https://api.dexscreener.com/latest/dex/tokens/${mint}`,
+      );
+      if (!res.ok) return { price: null, marketCap: null, volume24h: null };
+      const json = await res.json();
+      const pairs = json.pairs ?? [];
+      if (!pairs.length) return { price: null, marketCap: null, volume24h: null };
+      // Pick the pair with the highest USD liquidity for the most reliable quote
+      const best = [...pairs].sort(
+        (a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0),
+      )[0];
+      return {
+        price:      best.priceUsd  != null ? parseFloat(best.priceUsd) : null,
+        marketCap:  best.fdv       ?? null,
+        volume24h:  best.volume?.h24 ?? null,
+      };
+    } catch {
+      return { price: null, marketCap: null, volume24h: null };
+    }
+  });
+}
+
 // Exported so server.js can surface cache health
 export function cacheStats() {
   let alive = 0, expired = 0;

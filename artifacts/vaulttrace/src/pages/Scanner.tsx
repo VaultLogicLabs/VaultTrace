@@ -63,6 +63,12 @@ interface TokenMetadata {
   logoUri: string | null;
 }
 
+interface TokenPriceData {
+  price: number | null;
+  marketCap: number | null;
+  volume24h: number | null;
+}
+
 interface ScanReport {
   mint: string;
   timestamp: string;
@@ -151,6 +157,22 @@ function fmtTs(ts: number) {
     year: "numeric", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
+}
+
+function fmtPrice(n: number): string {
+  if (n === 0) return "$0";
+  if (n < 0.000001) return `$${n.toExponential(2)}`;
+  if (n < 0.0001)   return `$${n.toPrecision(3)}`;
+  if (n < 1)        return `$${n.toFixed(6)}`;
+  if (n < 1000)     return `$${n.toFixed(2)}`;
+  return `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+}
+
+function fmtShortUsd(n: number): string {
+  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
+  if (n >= 1_000_000)     return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000)         return `$${(n / 1_000).toFixed(1)}K`;
+  return `$${n.toFixed(2)}`;
 }
 
 function fmtIso(iso: string) {
@@ -380,9 +402,23 @@ export default function Scanner() {
   const [status, setStatus] = useState<Status>("idle");
   const [events, setEvents] = useState<ScanEvent[]>([]);
   const [report, setReport] = useState<ScanReport | null>(null);
+  const [priceData, setPriceData] = useState<TokenPriceData | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [history, setHistory] = useState<ScanReport[]>(() => loadHistory());
   const esRef = useRef<EventSource | null>(null);
+
+  const fetchPriceData = useCallback(async (mintAddr: string) => {
+    setPriceData(null);
+    try {
+      const res = await fetch(`/api/token/${encodeURIComponent(mintAddr)}/price`);
+      if (res.ok) {
+        const data = (await res.json()) as TokenPriceData;
+        setPriceData(data);
+      }
+    } catch {
+      // silently ignore — price is non-critical
+    }
+  }, []);
 
   // Keep history in sync if another tab updates it
   useEffect(() => {
@@ -411,6 +447,7 @@ export default function Scanner() {
     setStatus("scanning");
     setEvents([]);
     setReport(null);
+    setPriceData(null);
     setErrorMsg("");
 
     const url = `/api/scan/${encodeURIComponent(trimmed)}/stream?top=${topN}&depth=${depth}`;
@@ -429,6 +466,8 @@ export default function Scanner() {
         es.close();
         // Save to history
         setHistory((prev) => pushToHistory(completedReport, prev));
+        // Fetch price data asynchronously — doesn't block the scan result
+        fetchPriceData(completedReport.mint);
       } else if (ev.type === "error") {
         setErrorMsg((ev as { type: "error"; message: string }).message);
         setStatus("error");
@@ -461,7 +500,8 @@ export default function Scanner() {
     setStatus("complete");
     setEvents([]);
     setErrorMsg("");
-  }, []);
+    fetchPriceData(r.mint);
+  }, [fetchPriceData]);
 
   const clearHistory = useCallback(() => {
     localStorage.removeItem(HISTORY_KEY);
@@ -568,6 +608,40 @@ export default function Scanner() {
                 <p className="mt-1 text-xs font-mono text-slate-600 tracking-widest">
                   {report.mint.slice(0, 20)}…
                 </p>
+              )}
+
+              {/* Market data — renders only when available, no layout shift */}
+              {priceData && (
+                priceData.price !== null ||
+                priceData.marketCap !== null ||
+                priceData.volume24h !== null
+              ) && (
+                <div className="flex items-center justify-center gap-6 mt-4 flex-wrap">
+                  {priceData.price !== null && (
+                    <div className="text-center">
+                      <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">PRICE</p>
+                      <p className="text-sm font-mono font-semibold text-slate-200">
+                        {fmtPrice(priceData.price)}
+                      </p>
+                    </div>
+                  )}
+                  {priceData.marketCap !== null && (
+                    <div className="text-center">
+                      <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">MARKET CAP</p>
+                      <p className="text-sm font-mono font-semibold text-slate-200">
+                        {fmtShortUsd(priceData.marketCap)}
+                      </p>
+                    </div>
+                  )}
+                  {priceData.volume24h !== null && (
+                    <div className="text-center">
+                      <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">24H VOLUME</p>
+                      <p className="text-sm font-mono font-semibold text-slate-200">
+                        {fmtShortUsd(priceData.volume24h)}
+                      </p>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
 
