@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { RiskGauge } from "@/components/RiskGauge";
 import { TerminalFeed, ScanEvent } from "@/components/TerminalFeed";
 import { HoldersTable } from "@/components/HoldersTable";
@@ -77,12 +77,63 @@ interface ScanReport {
 
 type Status = "idle" | "scanning" | "complete" | "error";
 
+// ── localStorage history ────────────────────────────────────────────────────
+const HISTORY_KEY = "vaulttrace_scan_history";
+const MAX_HISTORY = 10;
+
+function loadHistory(): ScanReport[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as ScanReport[];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(history: ScanReport[]) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  } catch {
+    // storage full — silently skip
+  }
+}
+
+function pushToHistory(report: ScanReport, prev: ScanReport[]): ScanReport[] {
+  // Remove any existing entry for the same mint so we don't duplicate
+  const deduped = prev.filter((r) => r.mint !== report.mint);
+  const next = [report, ...deduped].slice(0, MAX_HISTORY);
+  saveHistory(next);
+  return next;
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 function fmtTs(ts: number) {
   return new Date(ts * 1000).toLocaleDateString("en-US", {
     year: "numeric", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
+}
+
+function fmtIso(iso: string) {
+  return new Date(iso).toLocaleString("en-US", {
+    month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function tokenLabel(r: ScanReport): string {
+  if (r.metadata?.name && r.metadata?.symbol)
+    return `${r.metadata.name} ($${r.metadata.symbol})`;
+  if (r.metadata?.name) return r.metadata.name;
+  if (r.metadata?.symbol) return `$${r.metadata.symbol}`;
+  return r.mint.slice(0, 8) + "…";
+}
+
+function riskColor(score: number): string {
+  if (score >= 70) return "text-red-400";
+  if (score >= 40) return "text-yellow-400";
+  return "text-green-400";
 }
 
 function LpStatusBadge({ lp }: { lp: LpStatus }) {
@@ -118,6 +169,95 @@ function SignalRow({ signal }: { signal: RiskSignal }) {
   );
 }
 
+// ── Recent Scans Panel ──────────────────────────────────────────────────────
+interface RecentScansPanelProps {
+  history: ScanReport[];
+  onSelect: (r: ScanReport) => void;
+  onClear: () => void;
+}
+
+function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps) {
+  const [open, setOpen] = useState(true);
+
+  if (history.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-card shadow-lg overflow-hidden">
+      {/* Header row */}
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-800/30 transition-colors"
+      >
+        <span className="text-xs font-mono font-semibold text-muted-foreground tracking-widest">
+          RECENT SCANS
+          <span className="ml-2 text-slate-600">({history.length})</span>
+        </span>
+        <svg
+          className={`w-4 h-4 text-slate-500 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="border-t border-slate-800">
+          <ul className="divide-y divide-slate-800/60">
+            {history.map((r) => (
+              <li key={r.mint}>
+                <button
+                  onClick={() => onSelect(r)}
+                  className="w-full flex items-center gap-4 px-6 py-3 text-left hover:bg-slate-800/40 transition-colors group"
+                >
+                  {/* Risk score badge */}
+                  <span
+                    className={`shrink-0 font-mono font-black text-base w-10 text-right ${riskColor(r.risk?.score ?? 0)}`}
+                  >
+                    {r.risk?.score ?? "—"}
+                  </span>
+
+                  {/* Token info */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-mono font-semibold text-slate-200 truncate group-hover:text-cyan-300 transition-colors">
+                      {tokenLabel(r)}
+                    </p>
+                    <p className="text-xs font-mono text-slate-600 truncate mt-0.5">
+                      {r.mint.slice(0, 16)}…
+                    </p>
+                  </div>
+
+                  {/* Timestamp */}
+                  <span className="shrink-0 text-xs font-mono text-slate-600">
+                    {fmtIso(r.timestamp)}
+                  </span>
+
+                  {/* Arrow */}
+                  <svg
+                    className="shrink-0 w-4 h-4 text-slate-700 group-hover:text-cyan-500 transition-colors"
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </li>
+            ))}
+          </ul>
+
+          {/* Clear button */}
+          <div className="px-6 py-3 border-t border-slate-800 flex justify-end">
+            <button
+              onClick={onClear}
+              className="text-xs font-mono text-slate-600 hover:text-red-400 transition-colors"
+            >
+              Clear history
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Component ─────────────────────────────────────────────────────────
 export default function Scanner() {
   const [mint, setMint] = useState("");
@@ -127,7 +267,17 @@ export default function Scanner() {
   const [events, setEvents] = useState<ScanEvent[]>([]);
   const [report, setReport] = useState<ScanReport | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
+  const [history, setHistory] = useState<ScanReport[]>(() => loadHistory());
   const esRef = useRef<EventSource | null>(null);
+
+  // Keep history in sync if another tab updates it
+  useEffect(() => {
+    const handler = (e: StorageEvent) => {
+      if (e.key === HISTORY_KEY) setHistory(loadHistory());
+    };
+    window.addEventListener("storage", handler);
+    return () => window.removeEventListener("storage", handler);
+  }, []);
 
   const addEvent = useCallback((ev: ScanEvent) => {
     setEvents((prev) => [...prev, ev]);
@@ -158,10 +308,13 @@ export default function Scanner() {
       try { ev = JSON.parse(e.data); } catch { return; }
 
       if (ev.type === "complete") {
-        setReport((ev as { type: "complete"; report: ScanReport }).report);
+        const completedReport = (ev as { type: "complete"; report: ScanReport }).report;
+        setReport(completedReport);
         setStatus("complete");
         addEvent(ev);
         es.close();
+        // Save to history
+        setHistory((prev) => pushToHistory(completedReport, prev));
       } else if (ev.type === "error") {
         setErrorMsg((ev as { type: "error"; message: string }).message);
         setStatus("error");
@@ -186,6 +339,20 @@ export default function Scanner() {
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && status !== "scanning") startScan();
   };
+
+  const restoreReport = useCallback((r: ScanReport) => {
+    esRef.current?.close();
+    setReport(r);
+    setMint(r.mint);
+    setStatus("complete");
+    setEvents([]);
+    setErrorMsg("");
+  }, []);
+
+  const clearHistory = useCallback(() => {
+    localStorage.removeItem(HISTORY_KEY);
+    setHistory([]);
+  }, []);
 
   const clusterRanks = report?.clusters.flatMap((c) => c.rows) ?? [];
 
@@ -250,6 +417,13 @@ export default function Scanner() {
             Top {topN} holders · Chain depth {depth} · ~60–90s cold scan
           </p>
         </div>
+
+        {/* ── Recent Scans ─────────────────────────────────────────────── */}
+        <RecentScansPanel
+          history={history}
+          onSelect={restoreReport}
+          onClear={clearHistory}
+        />
 
         {/* ── Terminal Feed (scanning or complete) ────────────────────── */}
         {(status === "scanning" || events.length > 0) && (
