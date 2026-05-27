@@ -195,9 +195,13 @@ export async function getDexScreenerPair(mint) {
         (a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0),
       )[0];
       return {
-        pairAddress:  best.pairAddress ?? null,
-        dexId:        best.dexId ?? null,
-        liquidityUsd: best.liquidity?.usd ?? null,
+        pairAddress:   best.pairAddress ?? null,
+        dexId:         best.dexId ?? null,
+        liquidityUsd:  best.liquidity?.usd ?? null,
+        // DexScreener returns pairCreatedAt in MILLISECONDS since epoch.
+        // Callers that compare against on-chain blockTime (seconds) must
+        // divide by 1000.
+        pairCreatedAt: best.pairCreatedAt ?? null,
       };
     } catch {
       return null;
@@ -716,13 +720,46 @@ export async function runScan(mintAddress, options = {}) {
   // ── 3. Token Launch Time ────────────────────────────────────────────────
   section("3 / 7  —  TOKEN LAUNCH TIME");
   progress("Paging to mint's oldest transaction");
-  const mintSigs = await getOldestSigs(mintAddress, 10);
+  const MINT_SIG_MAX_PAGES = 10;
+  const MINT_SIG_CAP = MINT_SIG_MAX_PAGES * 1000;
+  const mintSigs = await getOldestSigs(mintAddress, MINT_SIG_MAX_PAGES);
   clr();
 
   let launchTime = mintSigs[0]?.blockTime ?? null;
   log(
     `  Mint oldest tx   : ${launchTime ? ansi("yellow", fmt(launchTime), tty) : ansi("red", "not found", tty)}`,
   );
+
+  // Fallback: if we hit the pagination cap, the oldest sig we saw is almost
+  // certainly NOT the genesis tx — high-volume tokens have >10k sigs and we
+  // only pulled the most recent 10k oldest-first. Anchor launchTime to
+  // DexScreener's pairCreatedAt instead, which reflects the true pool
+  // creation time (the practical "launch" for sniper / timing analysis).
+  // Line 754 may still shrink launchTime further if a holder's first buy
+  // predates the pool (presale wallets, etc.), which is the correct semantic.
+  if (mintSigs.length >= MINT_SIG_CAP) {
+    const pair = await getDexScreenerPair(mintAddress);
+    const dexCreatedSec = pair?.pairCreatedAt
+      ? Math.floor(pair.pairCreatedAt / 1000)
+      : null;
+    if (dexCreatedSec && (launchTime === null || dexCreatedSec < launchTime)) {
+      log(
+        ansi(
+          "yellow",
+          `  ⚠   Mint history hit ${MINT_SIG_CAP}-sig cap — genesis tx likely outside window.`,
+          tty,
+        ),
+      );
+      log(
+        ansi(
+          "yellow",
+          `      Anchoring launch time to DexScreener pool creation: ${fmt(dexCreatedSec)}`,
+          tty,
+        ),
+      );
+      launchTime = dexCreatedSec;
+    }
+  }
 
   // ── 4. Holder Analysis ──────────────────────────────────────────────────
   section("4 / 7  —  HOLDER ANALYSIS (funding + timing)");
