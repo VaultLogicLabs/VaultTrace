@@ -7,7 +7,6 @@ import {
 } from "recharts";
 import { RiskGauge } from "@/components/RiskGauge";
 import { TerminalFeed, ScanEvent } from "@/components/TerminalFeed";
-import { HoldersTable } from "@/components/HoldersTable";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface LpStatus {
@@ -254,6 +253,24 @@ function fmtTs(ts: number) {
     year: "numeric", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
+}
+
+function shortAddr(addr: string) {
+  if (!addr) return "—";
+  return addr.length > 12 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr;
+}
+
+function fmtHolderTs(ts: number) {
+  return new Date(ts * 1000).toLocaleString("en-US", {
+    month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function fmtTokenAmt(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toFixed(0);
 }
 
 function fmtPrice(n: number): string {
@@ -871,7 +888,7 @@ export default function Scanner() {
     });
   }, []);
 
-  const clusterRanks = report?.clusters.flatMap((c) => c.rows) ?? [];
+  const clusterRanks = report?.clusters?.flatMap((c) => c.rows) ?? [];
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -1160,16 +1177,151 @@ export default function Scanner() {
             )}
 
             {/* Holders Table */}
-            {report.holders?.length > 0 && (
-              <HoldersTable
-                holders={report.holders}
-                sniperRanks={report.snipers ?? []}
-                clusterRanks={clusterRanks}
-                topN={topN}
-                hoveredParentWallet={hoveredParentWallet}
-                onHoverParentWallet={setHoveredParentWallet}
-              />
-            )}
+            {report.holders?.length > 0 && (() => {
+              const sniperSet = new Set(report.snipers ?? []);
+              const clusterSet = new Set(clusterRanks);
+              return (
+                <div className="rounded-xl border border-slate-800 bg-card overflow-hidden">
+                  {/* Table header / legend */}
+                  <div className="px-5 py-3 border-b border-slate-800 flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-foreground tracking-wide">
+                      Top {topN} Holders
+                    </h3>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1">
+                        <span className="text-red-400">🎯</span> Sniper
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="text-yellow-400">🔗</span> Cluster
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="text-cyan-400">⚡</span> Known entity
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Scrollable table */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs font-mono">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-muted-foreground">
+                          <th className="px-4 py-2.5 text-right w-10">#</th>
+                          <th className="px-4 py-2.5 text-left">Token Account</th>
+                          <th className="px-4 py-2.5 text-left">Owner</th>
+                          <th className="px-4 py-2.5 text-right">Tokens</th>
+                          <th className="px-4 py-2.5 text-right">%</th>
+                          <th className="px-4 py-2.5 text-left">First Buy</th>
+                          <th className="px-4 py-2.5 text-left">Funded By</th>
+                          <th className="px-4 py-2.5 text-center">Flags</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {report.holders.map((h) => {
+                          const isSniper = sniperSet.has(h.rank);
+                          const isCluster = clusterSet.has(h.rank);
+                          const isFunderHighlighted =
+                            !!hoveredParentWallet && h.funder === hoveredParentWallet;
+
+                          const rowCls = [
+                            "border-b border-slate-800/60 transition-colors duration-150 cursor-default",
+                            isFunderHighlighted
+                              ? "bg-cyan-950/40 border-l-2 border-l-cyan-400"
+                              : isSniper
+                              ? "bg-red-950/30 border-l-2 border-l-red-500 hover:bg-red-950/50"
+                              : isCluster
+                              ? "bg-yellow-950/20 border-l-2 border-l-yellow-500 hover:bg-yellow-950/40"
+                              : "border-l-2 border-l-transparent hover:bg-slate-800/40",
+                          ].join(" ");
+
+                          return (
+                            <tr
+                              key={h.rank}
+                              className={rowCls}
+                              onMouseEnter={
+                                h.funder
+                                  ? () => setHoveredParentWallet(h.funder)
+                                  : undefined
+                              }
+                              onMouseLeave={() => setHoveredParentWallet(null)}
+                            >
+                              <td className="px-4 py-2.5 text-right text-slate-500">
+                                {h.rank}
+                              </td>
+                              <td className="px-4 py-2.5 text-slate-300 whitespace-nowrap">
+                                <a
+                                  href={`https://solscan.io/account/${h.tokenAcct}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="hover:text-cyan-400 transition-colors"
+                                >
+                                  {shortAddr(h.tokenAcct)}
+                                </a>
+                              </td>
+                              <td className="px-4 py-2.5 text-slate-300 whitespace-nowrap">
+                                <a
+                                  href={`https://solscan.io/account/${h.owner}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="hover:text-cyan-400 transition-colors"
+                                >
+                                  {shortAddr(h.owner)}
+                                </a>
+                              </td>
+                              <td className="px-4 py-2.5 text-right text-slate-200">
+                                {fmtTokenAmt(h.tokens)}
+                              </td>
+                              <td className="px-4 py-2.5 text-right">
+                                <span
+                                  className={
+                                    h.pct >= 10
+                                      ? "font-semibold text-red-400"
+                                      : h.pct >= 5
+                                      ? "font-semibold text-yellow-400"
+                                      : "text-slate-300"
+                                  }
+                                >
+                                  {h.pct.toFixed(1)}%
+                                </span>
+                              </td>
+                              <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap">
+                                {h.buyTime ? fmtHolderTs(h.buyTime) : "—"}
+                              </td>
+                              <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap">
+                                {h.funder ? (
+                                  <a
+                                    href={`https://solscan.io/account/${h.funder}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="hover:text-cyan-400 transition-colors"
+                                  >
+                                    {h.funderLabel ?? shortAddr(h.funder)}
+                                  </a>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                              <td className="px-4 py-2.5 text-center">
+                                <span className="flex items-center justify-center gap-0.5">
+                                  {isSniper && (
+                                    <span title="Same-block sniper">🎯</span>
+                                  )}
+                                  {isCluster && (
+                                    <span title="Funding cluster">🔗</span>
+                                  )}
+                                  {!!h.funderLabel && (
+                                    <span title={h.funderLabel ?? ""}>⚡</span>
+                                  )}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Scan Meta */}
             <div className="text-center text-xs font-mono text-slate-400 pb-4">
