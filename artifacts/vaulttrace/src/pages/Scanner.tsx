@@ -672,7 +672,7 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
 export default function Scanner() {
   const [mint, setMint] = useState("");
   const [topN] = useState(20);
-  const [depth] = useState(6);
+  const [depth] = useState(3);
   const [status, setStatus] = useState<Status>("idle");
   const [events, setEvents] = useState<ScanEvent[]>([]);
   const [report, setReport] = useState<ScanReport | null>(null);

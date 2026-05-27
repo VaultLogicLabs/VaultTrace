@@ -464,11 +464,16 @@ async function getLpStatus(mint, mintSigs) {
     status: "unknown",
   };
 
-  // Deep scan: 500 oldest signatures (vs. the previous 80). Tokens with a
-  // long pre-LP minting/distribution phase (e.g. $WORLDCUP) created the LP
-  // well outside the original window, so we look much further back.
-  const txsToScan = mintSigs.slice(0, 500);
+  // Scan at most 50 oldest signatures — 5 "pages" of 10 — with a 15 s hard
+  // deadline. 500-tx scans were the source of 4-minute hangs; the DexScreener
+  // fallback below already handles tokens whose LP creation falls outside
+  // this window, so speed > completeness here.
+  const LP_SCAN_MAX    = 50;
+  const LP_DEADLINE_MS = 15_000;
+  const lpDeadline     = Date.now() + LP_DEADLINE_MS;
+  const txsToScan = mintSigs.slice(0, LP_SCAN_MAX);
   for (const sigEntry of txsToScan) {
+    if (Date.now() > lpDeadline) break; // fall through to DexScreener fallback
     await sleep(DELAY_MS);
     const tx = await getTx(sigEntry.signature);
     if (!tx) continue;
@@ -593,7 +598,7 @@ async function getLpStatus(mint, mintSigs) {
 export async function runScan(mintAddress, options = {}) {
   const {
     topN = 20,
-    depth = 6,
+    depth = 3,
     silent = false, // suppress all stdout when called from server
     save = null,
     onProgress = null, // optional callback for SSE / streaming callers
