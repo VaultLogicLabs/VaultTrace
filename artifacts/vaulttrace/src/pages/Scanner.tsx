@@ -591,7 +591,7 @@ export default function Scanner() {
               disabled={status === "scanning"}
               placeholder="Enter Solana token mint address…"
               className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-3
-                         text-sm font-mono text-slateite-200 placeholder:text-slate-600
+                         text-sm font-mono text-slate-100 placeholder:text-slate-400
                          focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30
                          disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             />
@@ -599,7 +599,7 @@ export default function Scanner() {
               onClick={startScan}
               disabled={status === "scanning" || !mint.trim()}
               className="px-6 py-3 rounded-lg font-mono font-semibold text-sm
-                         bg-cyan-500 text-slate-950 hover:bg-cyan-400
+                         bg-cyan-500 text-white font-bold hover:bg-cyan-400
                          disabled:opacity-40 disabled:cursor-not-allowed
                          transition-colors shadow-lg shadow-cyan-500/20
                          tracking-wide"
@@ -612,7 +612,7 @@ export default function Scanner() {
           )}
 
           {/* Advanced params hint */}
-          <p className="mt-3 text-xs text-slate-600 font-mono">
+          <p className="mt-3 text-xs text-slate-400 font-mono">
             Top {topN} holders · Chain depth {depth} · ~60–90s cold scan
           </p>
         </div>
@@ -848,7 +848,7 @@ export default function Scanner() {
 
         {/* ── Idle placeholder ─────────────────────────────────────────── */}
         {status === "idle" && (
-          <div className="text-center py-16 text-slate-700 font-mono text-sm space-y-2">
+          <div className="text-center py-16 text-slate-400 font-mono text-sm space-y-2">
             <p className="text-4xl mb-4">🔍</p>
             <p>Enter a Solana mint address above to run a forensic scan.</p>
             <p className="text-xs text-slate-800">
