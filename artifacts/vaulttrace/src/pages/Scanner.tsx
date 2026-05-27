@@ -328,9 +328,18 @@ function TokenLogo({
 
   if (!uri || broken) return <LogoPlaceholder size={size} />;
 
-  // In cache-only mode a missing src means no cached logo — show placeholder immediately
   if (!src) {
-    if (cacheOnly) return <LogoPlaceholder size={size} />;
+    if (cacheOnly) {
+      // No base64 in cache — render directly from the remote URI with onError fallback
+      return (
+        <img
+          src={uri}
+          alt="Token logo"
+          className={`${dim} rounded-full object-cover shrink-0 border border-slate-700`}
+          onError={() => setBroken(true)}
+        />
+      );
+    }
     // Show a pulse skeleton while the base64 fetch is in-flight
     return (
       <div className={`${dim} rounded-full shrink-0 border border-slate-700 bg-slate-800 animate-pulse`} />
@@ -851,7 +860,7 @@ export default function Scanner() {
           <div className="text-center py-16 text-slate-400 font-mono text-sm space-y-2">
             <p className="text-4xl mb-4">🔍</p>
             <p>Enter a Solana mint address above to run a forensic scan.</p>
-            <p className="text-xs text-slate-800">
+            <p className="text-xs text-slate-500">
               Checks mint/freeze authority · LP burn status · holder clusters · sniper wallets · funding chains
             </p>
           </div>
