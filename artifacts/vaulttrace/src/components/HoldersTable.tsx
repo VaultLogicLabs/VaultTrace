@@ -90,20 +90,31 @@ export function HoldersTable({
               const isFunderHighlighted =
                 !!hoveredParentWallet && h.funder === hoveredParentWallet;
 
-              const baseRowClass = isSniper
-                ? "bg-red-950/30 border-l-2 border-l-red-500"
-                : isCluster
-                ? "bg-yellow-950/20 border-l-2 border-l-yellow-500"
-                : "border-l-2 border-l-transparent";
-
-              const highlightClass = isFunderHighlighted
-                ? "bg-cyan-950/40 border-l-cyan-400"
-                : "";
+              const rowClass = [
+                "border-b border-slate-800/60 transition-colors duration-150 cursor-default",
+                isFunderHighlighted
+                  ? "bg-cyan-950/40 border-l-2 border-l-cyan-400"
+                  : isSniper
+                  ? "bg-red-950/30 border-l-2 border-l-red-500 hover:bg-red-950/50"
+                  : isCluster
+                  ? "bg-yellow-950/20 border-l-2 border-l-yellow-500 hover:bg-yellow-950/40"
+                  : "border-l-2 border-l-transparent hover:bg-slate-800/40",
+              ].join(" ");
 
               return (
                 <tr
                   key={h.rank}
-                  className={`border-b border-slate-800/60 hover:bg-slate-800/40 transition-colors duration-150 ${baseRowClass} ${highlightClass}`}
+                  className={rowClass}
+                  onMouseEnter={
+                    h.funder && onHoverParentWallet
+                      ? () => onHoverParentWallet(h.funder)
+                      : undefined
+                  }
+                  onMouseLeave={
+                    onHoverParentWallet
+                      ? () => onHoverParentWallet(null)
+                      : undefined
+                  }
                 >
                   <td className="px-4 py-2.5 text-right text-slate-500">{h.rank}</td>
                   <td className="px-4 py-2.5 text-slate-300 whitespace-nowrap">
@@ -145,19 +156,7 @@ export function HoldersTable({
                   <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap">
                     {h.buyTime ? fmt(h.buyTime) : "—"}
                   </td>
-                  <td
-                    className="px-4 py-2.5 text-slate-400 whitespace-nowrap"
-                    onMouseEnter={
-                      h.funder && onHoverParentWallet
-                        ? () => onHoverParentWallet(h.funder)
-                        : undefined
-                    }
-                    onMouseLeave={
-                      h.funder && onHoverParentWallet
-                        ? () => onHoverParentWallet(null)
-                        : undefined
-                    }
-                  >
+                  <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap">
                     {h.funder ? (
                       <a
                         href={`https://solscan.io/account/${h.funder}`}
