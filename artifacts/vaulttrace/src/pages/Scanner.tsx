@@ -164,11 +164,27 @@ function loadHistory(): ScanReport[] {
   }
 }
 
-function saveHistory(history: ScanReport[]) {
+async function saveHistory(history: ScanReport[]): Promise<void> {
+  // Proactive: check storage quota and trim oldest entries before writing
+  try {
+    const { usage = 0, quota = Infinity } = (await navigator.storage?.estimate?.()) ?? {};
+    if (quota > 0 && usage / quota > STORAGE_HIGH_WATERMARK) {
+      history = history.slice(0, Math.max(1, Math.floor(MAX_HISTORY / 2)));
+    }
+  } catch {
+    // estimate() unavailable — proceed without proactive trim
+  }
+
   try {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   } catch {
-    // storage full — silently skip
+    // Storage still full — drop oldest entries and retry once
+    const trimmed = history.slice(0, Math.max(1, Math.floor(MAX_HISTORY / 4)));
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(trimmed));
+    } catch {
+      console.warn("[VaultTrace] Scan history: storage critically full, history save skipped.");
+    }
   }
 }
 
@@ -176,7 +192,7 @@ function pushToHistory(report: ScanReport, prev: ScanReport[]): ScanReport[] {
   // Remove any existing entry for the same mint so we don't duplicate
   const deduped = prev.filter((r) => r.mint !== report.mint);
   const next = [report, ...deduped].slice(0, MAX_HISTORY);
-  saveHistory(next);
+  void saveHistory(next);
   return next;
 }
 
