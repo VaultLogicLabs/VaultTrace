@@ -587,15 +587,45 @@ export default function Scanner() {
   const [errorMsg, setErrorMsg] = useState("");
   const [history, setHistory] = useState<ScanReport[]>([]);
   const [hoveredParentWallet, setHoveredParentWallet] = useState<string | null>(null);
+  const [priceFlash, setPriceFlash] = useState<"up" | "down" | null>(null);
+  const [mcFlash, setMcFlash] = useState<"up" | "down" | null>(null);
   const esRef = useRef<EventSource | null>(null);
+  const prevPriceDataRef = useRef<TokenPriceData | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchPriceData = useCallback(async (mintAddr: string) => {
     try {
       const res = await fetch(`/api/token/${encodeURIComponent(mintAddr)}/price`);
       if (res.ok) {
         const data = (await res.json()) as TokenPriceData;
+        const prev = prevPriceDataRef.current;
         setPriceData(data);
         setPriceUpdatedAt(Date.now());
+        prevPriceDataRef.current = data;
+
+        if (prev !== null) {
+          let nextPriceFlash: "up" | "down" | null = null;
+          let nextMcFlash: "up" | "down" | null = null;
+
+          if (prev.price !== null && data.price !== null) {
+            if (data.price > prev.price) nextPriceFlash = "up";
+            else if (data.price < prev.price) nextPriceFlash = "down";
+          }
+          if (prev.marketCap !== null && data.marketCap !== null) {
+            if (data.marketCap > prev.marketCap) nextMcFlash = "up";
+            else if (data.marketCap < prev.marketCap) nextMcFlash = "down";
+          }
+
+          if (nextPriceFlash || nextMcFlash) {
+            setPriceFlash(nextPriceFlash);
+            setMcFlash(nextMcFlash);
+            if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+            flashTimerRef.current = setTimeout(() => {
+              setPriceFlash(null);
+              setMcFlash(null);
+            }, 1000);
+          }
+        }
       }
     } catch {
       // silently ignore — price is non-critical
@@ -644,6 +674,10 @@ export default function Scanner() {
     setPriceData(null);
     setPriceUpdatedAt(null);
     setErrorMsg("");
+    prevPriceDataRef.current = null;
+    setPriceFlash(null);
+    setMcFlash(null);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
 
     const url = `/api/scan/${encodeURIComponent(trimmed)}/stream?top=${topN}&depth=${depth}`;
     const es = new EventSource(url);
@@ -706,6 +740,10 @@ export default function Scanner() {
     setErrorMsg("");
     setPriceData(null);
     setPriceUpdatedAt(null);
+    prevPriceDataRef.current = null;
+    setPriceFlash(null);
+    setMcFlash(null);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
     fetchPriceData(r.mint);
   }, [fetchPriceData]);
 
@@ -847,7 +885,10 @@ export default function Scanner() {
                     {priceData.price !== null && (
                       <div className="text-center">
                         <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">PRICE</p>
-                        <p className="text-sm font-mono font-semibold text-slate-200">
+                        <p
+                          key={`price-${priceData.price}-${priceFlash}`}
+                          className={`text-sm font-mono font-semibold text-slate-200${priceFlash === "up" ? " price-flash-up" : priceFlash === "down" ? " price-flash-down" : ""}`}
+                        >
                           {fmtPrice(priceData.price)}
                         </p>
                       </div>
@@ -855,7 +896,10 @@ export default function Scanner() {
                     {priceData.marketCap !== null && (
                       <div className="text-center">
                         <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">MARKET CAP</p>
-                        <p className="text-sm font-mono font-semibold text-slate-200">
+                        <p
+                          key={`mc-${priceData.marketCap}-${mcFlash}`}
+                          className={`text-sm font-mono font-semibold text-slate-200${mcFlash === "up" ? " price-flash-up" : mcFlash === "down" ? " price-flash-down" : ""}`}
+                        >
                           {fmtShortUsd(priceData.marketCap)}
                         </p>
                       </div>
