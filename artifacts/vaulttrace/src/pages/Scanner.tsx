@@ -259,16 +259,18 @@ function SignalRow({ signal }: { signal: RiskSignal }) {
 }
 
 // ── Token Logo ──────────────────────────────────────────────────────────────
-function LogoPlaceholder() {
+function LogoPlaceholder({ size = "md" }: { size?: "sm" | "md" }) {
+  const outer = size === "sm" ? "w-7 h-7" : "w-10 h-10";
+  const inner = size === "sm" ? "w-3.5 h-3.5" : "w-5 h-5";
   return (
     <div
-      className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 border border-slate-700"
+      className={`${outer} rounded-full flex items-center justify-center shrink-0 border border-slate-700`}
       style={{ background: "#1e293b" }}
       title="No logo"
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"
-        className="w-5 h-5 text-slate-500"
+        className={`${inner} text-slate-500`}
         fill="none"
         viewBox="0 0 24 24"
         stroke="currentColor"
@@ -281,7 +283,15 @@ function LogoPlaceholder() {
   );
 }
 
-function TokenLogo({ uri }: { uri: string | null }) {
+function TokenLogo({
+  uri,
+  size = "md",
+  cacheOnly = false,
+}: {
+  uri: string | null;
+  size?: "sm" | "md";
+  cacheOnly?: boolean;
+}) {
   const [broken, setBroken] = useState(false);
   // Initialise src from cache synchronously so cached logos render with no flicker
   const [src, setSrc] = useState<string | null>(() => {
@@ -290,6 +300,7 @@ function TokenLogo({ uri }: { uri: string | null }) {
   });
 
   useEffect(() => {
+    if (cacheOnly) return; // history rows: never fetch, just use what's cached
     if (!uri || src) return; // already cached or no URI
     let cancelled = false;
 
@@ -311,14 +322,18 @@ function TokenLogo({ uri }: { uri: string | null }) {
     });
 
     return () => { cancelled = true; };
-  }, [uri, src]);
+  }, [uri, src, cacheOnly]);
 
-  if (!uri || broken) return <LogoPlaceholder />;
+  const dim = size === "sm" ? "w-7 h-7" : "w-10 h-10";
 
-  // Show a pulse skeleton while the base64 fetch is in-flight
+  if (!uri || broken) return <LogoPlaceholder size={size} />;
+
+  // In cache-only mode a missing src means no cached logo — show placeholder immediately
   if (!src) {
+    if (cacheOnly) return <LogoPlaceholder size={size} />;
+    // Show a pulse skeleton while the base64 fetch is in-flight
     return (
-      <div className="w-10 h-10 rounded-full shrink-0 border border-slate-700 bg-slate-800 animate-pulse" />
+      <div className={`${dim} rounded-full shrink-0 border border-slate-700 bg-slate-800 animate-pulse`} />
     );
   }
 
@@ -326,7 +341,7 @@ function TokenLogo({ uri }: { uri: string | null }) {
     <img
       src={src}
       alt="Token logo"
-      className="w-10 h-10 rounded-full object-cover shrink-0 border border-slate-700"
+      className={`${dim} rounded-full object-cover shrink-0 border border-slate-700`}
       onError={() => setBroken(true)}
     />
   );
@@ -370,11 +385,14 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
               <li key={r.mint}>
                 <button
                   onClick={() => onSelect(r)}
-                  className="w-full flex items-center gap-4 px-6 py-3 text-left hover:bg-slate-800/40 transition-colors group"
+                  className="w-full flex items-center gap-3 px-6 py-3 text-left hover:bg-slate-800/40 transition-colors group"
                 >
+                  {/* Token logo — read from cache only, no network fetch in history */}
+                  <TokenLogo uri={r.metadata?.logoUri ?? null} size="sm" cacheOnly />
+
                   {/* Risk score badge */}
                   <span
-                    className={`shrink-0 font-mono font-black text-base w-10 text-right ${riskColor(r.risk?.score ?? 0)}`}
+                    className={`shrink-0 font-mono font-black text-base w-8 text-right ${riskColor(r.risk?.score ?? 0)}`}
                   >
                     {r.risk?.score ?? "—"}
                   </span>
