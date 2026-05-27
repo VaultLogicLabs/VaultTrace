@@ -671,6 +671,7 @@ export default function Scanner() {
   const esRef = useRef<EventSource | null>(null);
   const prevPriceDataRef = useRef<TokenPriceData | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
 
   const fetchChartData = useCallback(async (mintAddr: string) => {
     try {
@@ -799,6 +800,8 @@ export default function Scanner() {
         // Fetch price + chart data asynchronously — doesn't block the scan result
         fetchPriceData(completedReport.mint);
         fetchChartData(completedReport.mint);
+        // Scroll the results dashboard into view now that it will mount
+        setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
       } else if (ev.type === "error") {
         setErrorMsg((ev as { type: "error"; message: string }).message);
         setStatus("error");
@@ -939,14 +942,14 @@ export default function Scanner() {
           onClear={clearHistory}
         />
 
-        {/* ── Terminal Feed (scanning or complete) ────────────────────── */}
-        {(status === "scanning" || events.length > 0) && (
-          <TerminalFeed events={events} isScanning={status === "scanning"} />
+        {/* ── Terminal Feed — visible only during an active scan ───────── */}
+        {status === "scanning" && (
+          <TerminalFeed events={events} isScanning={true} />
         )}
 
         {/* ── Results Dashboard ────────────────────────────────────────── */}
         {status === "complete" && report && (
-          <div className="space-y-6 animate-in fade-in duration-500">
+          <div ref={resultsRef} className="space-y-6 animate-in fade-in duration-500">
 
             {/* Token identity header */}
             <div className="text-center">
