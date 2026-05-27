@@ -88,24 +88,53 @@ type Status = "idle" | "scanning" | "complete" | "error";
 const HISTORY_KEY = "vaulttrace_scan_history";
 const MAX_HISTORY = 10;
 
-// ── Logo cache (URI → base64 data URL) ─────────────────────────────────────
+// ── Logo cache (URI → { data: base64 data URL, ts: last-accessed ms }) ──────
 const LOGO_CACHE_KEY = "vaulttrace_logo_cache";
 const MAX_LOGO_CACHE = 30;
+const STORAGE_HIGH_WATERMARK = 0.85; // trim proactively above this ratio
 
-function loadLogoCache(): Record<string, string> {
+interface LogoCacheEntry {
+  data: string;
+  ts: number;
+}
+type LogoCache = Record<string, LogoCacheEntry>;
+
+function loadLogoCache(): LogoCache {
   try {
     const raw = localStorage.getItem(LOGO_CACHE_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    if (!raw) return {};
+    return JSON.parse(raw) as LogoCache;
   } catch {
     return {};
   }
 }
 
-function saveLogoCache(cache: Record<string, string>) {
+function evictOldest(cache: LogoCache, keepCount: number): LogoCache {
+  const sorted = Object.entries(cache).sort((a, b) => a[1].ts - b[1].ts);
+  return Object.fromEntries(sorted.slice(Math.max(0, sorted.length - keepCount)));
+}
+
+async function saveLogoCache(cache: LogoCache): Promise<void> {
+  // Proactive: check storage quota and trim before we even attempt the write
+  try {
+    const { usage = 0, quota = Infinity } = (await navigator.storage?.estimate?.()) ?? {};
+    if (quota > 0 && usage / quota > STORAGE_HIGH_WATERMARK) {
+      cache = evictOldest(cache, Math.floor(MAX_LOGO_CACHE / 2));
+    }
+  } catch {
+    // estimate() unavailable — proceed without proactive trim
+  }
+
   try {
     localStorage.setItem(LOGO_CACHE_KEY, JSON.stringify(cache));
   } catch {
-    // storage full — silently skip
+    // Storage still full — try an aggressive eviction and retry once
+    const trimmed = evictOldest(cache, Math.floor(MAX_LOGO_CACHE / 4));
+    try {
+      localStorage.setItem(LOGO_CACHE_KEY, JSON.stringify(trimmed));
+    } catch {
+      console.warn("[VaultTrace] Logo cache: storage critically full, logo caching unavailable.");
+    }
   }
 }
 
@@ -257,7 +286,7 @@ function TokenLogo({ uri }: { uri: string | null }) {
   // Initialise src from cache synchronously so cached logos render with no flicker
   const [src, setSrc] = useState<string | null>(() => {
     if (!uri) return null;
-    return loadLogoCache()[uri] ?? null;
+    return loadLogoCache()[uri]?.data ?? null;
   });
 
   useEffect(() => {
@@ -267,15 +296,13 @@ function TokenLogo({ uri }: { uri: string | null }) {
     fetchLogoAsDataUrl(uri).then((dataUrl) => {
       if (cancelled) return;
       if (dataUrl) {
-        // Persist in the logo cache, evicting oldest entries when over limit
-        const cache = loadLogoCache();
-        cache[uri] = dataUrl;
-        const keys = Object.keys(cache);
-        if (keys.length > MAX_LOGO_CACHE) {
-          // Remove oldest entries (keys inserted first)
-          keys.slice(0, keys.length - MAX_LOGO_CACHE).forEach((k) => delete cache[k]);
+        // Persist in the logo cache with LRU timestamp, evicting oldest when over limit
+        let cache = loadLogoCache();
+        cache[uri] = { data: dataUrl, ts: Date.now() };
+        if (Object.keys(cache).length > MAX_LOGO_CACHE) {
+          cache = evictOldest(cache, MAX_LOGO_CACHE);
         }
-        saveLogoCache(cache);
+        saveLogoCache(cache); // async — fire and forget is fine here
         setSrc(dataUrl);
       } else {
         // Fetch failed (CORS or network) — fall back to remote URI directly
