@@ -82,6 +82,43 @@ type Status = "idle" | "scanning" | "complete" | "error";
 const HISTORY_KEY = "vaulttrace_scan_history";
 const MAX_HISTORY = 10;
 
+// ── Logo cache (URI → base64 data URL) ─────────────────────────────────────
+const LOGO_CACHE_KEY = "vaulttrace_logo_cache";
+const MAX_LOGO_CACHE = 30;
+
+function loadLogoCache(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(LOGO_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLogoCache(cache: Record<string, string>) {
+  try {
+    localStorage.setItem(LOGO_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // storage full — silently skip
+  }
+}
+
+async function fetchLogoAsDataUrl(uri: string): Promise<string | null> {
+  try {
+    const resp = await fetch(uri);
+    if (!resp.ok) return null;
+    const blob = await resp.blob();
+    return await new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
 function loadHistory(): ScanReport[] {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
@@ -171,34 +208,74 @@ function SignalRow({ signal }: { signal: RiskSignal }) {
 }
 
 // ── Token Logo ──────────────────────────────────────────────────────────────
+function LogoPlaceholder() {
+  return (
+    <div
+      className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 border border-slate-700"
+      style={{ background: "#1e293b" }}
+      title="No logo"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        className="w-5 h-5 text-slate-500"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        strokeWidth={1.5}
+      >
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 8v4m0 4h.01" strokeLinecap="round" />
+      </svg>
+    </div>
+  );
+}
+
 function TokenLogo({ uri }: { uri: string | null }) {
   const [broken, setBroken] = useState(false);
+  // Initialise src from cache synchronously so cached logos render with no flicker
+  const [src, setSrc] = useState<string | null>(() => {
+    if (!uri) return null;
+    return loadLogoCache()[uri] ?? null;
+  });
 
-  if (!uri || broken) {
+  useEffect(() => {
+    if (!uri || src) return; // already cached or no URI
+    let cancelled = false;
+
+    fetchLogoAsDataUrl(uri).then((dataUrl) => {
+      if (cancelled) return;
+      if (dataUrl) {
+        // Persist in the logo cache, evicting oldest entries when over limit
+        const cache = loadLogoCache();
+        cache[uri] = dataUrl;
+        const keys = Object.keys(cache);
+        if (keys.length > MAX_LOGO_CACHE) {
+          // Remove oldest entries (keys inserted first)
+          keys.slice(0, keys.length - MAX_LOGO_CACHE).forEach((k) => delete cache[k]);
+        }
+        saveLogoCache(cache);
+        setSrc(dataUrl);
+      } else {
+        // Fetch failed (CORS or network) — fall back to remote URI directly
+        setSrc(uri);
+      }
+    });
+
+    return () => { cancelled = true; };
+  }, [uri, src]);
+
+  if (!uri || broken) return <LogoPlaceholder />;
+
+  // Show a pulse skeleton while the base64 fetch is in-flight
+  if (!src) {
     return (
-      <div
-        className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 border border-slate-700"
-        style={{ background: "#1e293b" }}
-        title="No logo"
-      >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          className="w-5 h-5 text-slate-500"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={1.5}
-        >
-          <circle cx="12" cy="12" r="9" />
-          <path d="M12 8v4m0 4h.01" strokeLinecap="round" />
-        </svg>
-      </div>
+      <div className="w-10 h-10 rounded-full shrink-0 border border-slate-700 bg-slate-800 animate-pulse" />
     );
   }
 
   return (
     <img
-      src={uri}
+      src={src}
       alt="Token logo"
       className="w-10 h-10 rounded-full object-cover shrink-0 border border-slate-700"
       onError={() => setBroken(true)}
@@ -475,7 +552,7 @@ export default function Scanner() {
             <div className="text-center">
               <div className="flex items-center justify-center gap-3">
                 {/* Token logo */}
-                <TokenLogo uri={report.metadata?.logoUri ?? null} />
+                <TokenLogo key={report.metadata?.logoUri ?? ""} uri={report.metadata?.logoUri ?? null} />
                 <h2
                   className="text-3xl font-black font-mono tracking-tight"
                   style={{ color: "#22C55E" }}
