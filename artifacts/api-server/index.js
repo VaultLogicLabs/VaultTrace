@@ -45,6 +45,19 @@ const BUNDLERS = new Set([
   "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW",
 ]);
 
+// Addresses that represent LP vaults / DEX programs — excluded from supply
+// concentration checks because their holdings are protocol-controlled liquidity,
+// not individual wallet positions.
+const LP_EXCLUDE = new Set([
+  RAYDIUM_AMM,
+  PUMPFUN_PROG,
+  "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1", // Raydium Authority
+  "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM",   // Pump.fun Fee Wallet
+  "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW",  // Pump.fun Launch Authority
+  "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg",  // Pump.fun Bundler
+  "EhYXq3ANp5nAerUpbSgd7VK2RRcxK1zNuSQ755G5Dbqk",  // Raydium Bundler
+]);
+
 // ── ANSI (CLI only) ────────────────────────────────────────────────────────
 const C = {
   reset: "\x1b[0m",
@@ -1023,6 +1036,35 @@ export async function runScan(mintAddress, options = {}) {
     });
   }
 
+  // ── Supply Concentration Override ────────────────────────────────────────
+  // Checks top 2 and top 3 non-LP/DEX holders. If either group controls
+  // strictly more than 50% of supply, add a +30 critical penalty.
+  progress("Checking supply concentration among top holders");
+  const nonLpHolders = holderRows.filter((r) => !LP_EXCLUDE.has(r.owner));
+  const totalSupplyTokens = report.contractSecurity.totalSupply;
+  const concentrationDenominator = totalSupplyTokens ?? (totalInTop / 1e6);
+  const top2Tokens = nonLpHolders.slice(0, 2).reduce((s, r) => s + r.tokens, 0);
+  const top3Tokens = nonLpHolders.slice(0, 3).reduce((s, r) => s + r.tokens, 0);
+  const top2Pct = concentrationDenominator > 0 ? (top2Tokens / concentrationDenominator) * 100 : 0;
+  const top3Pct = concentrationDenominator > 0 ? (top3Tokens / concentrationDenominator) * 100 : 0;
+  const supplyConcentrated = top2Pct > 50 || top3Pct > 50;
+  const concentrationTopN = top2Pct > 50 ? 2 : 3;
+  const concentrationPct = top2Pct > 50 ? top2Pct : top3Pct;
+
+  if (supplyConcentrated) {
+    score += 30;
+    signals.push({
+      label: `Top holders control >50% of supply (top ${concentrationTopN} non-LP wallets hold ${concentrationPct.toFixed(1)}%)`,
+      pts: 30,
+      severity: "critical",
+    });
+  }
+  report.supplyConcentration = {
+    top2Pct: parseFloat(top2Pct.toFixed(2)),
+    top3Pct: parseFloat(top3Pct.toFixed(2)),
+    concentrated: supplyConcentrated,
+  };
+
   score = Math.min(100, score);
   const riskLabel =
     score >= 75
@@ -1075,6 +1117,8 @@ export async function runScan(mintAddress, options = {}) {
     log(ansi("green", "    ✅  No synchronized buys", tty));
   if (birthGroups.length === 0)
     log(ansi("green", "    ✅  No coordinated wallet creation", tty));
+  if (!supplyConcentrated)
+    log(ansi("green", `    ✅  Supply not concentrated (top 3 non-LP hold ${top3Pct.toFixed(1)}%)`, tty));
 
   report.risk = { score, label: riskLabel, signals };
 
