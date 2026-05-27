@@ -420,10 +420,47 @@ interface RecentScansPanelProps {
   onClear: () => void;
 }
 
+type RiskFilter = "all" | "low" | "medium" | "high";
+
+function riskBucket(score: number): "low" | "medium" | "high" {
+  if (score >= 70) return "high";
+  if (score >= 40) return "medium";
+  return "low";
+}
+
 function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps) {
   const [open, setOpen] = useState(true);
+  const [query, setQuery] = useState("");
+  const [riskFilter, setRiskFilter] = useState<RiskFilter>("all");
 
   if (history.length === 0) return null;
+
+  const q = query.trim().toLowerCase();
+  const filtered = history.filter((r) => {
+    if (riskFilter !== "all") {
+      const bucket = riskBucket(r.risk?.score ?? 0);
+      if (bucket !== riskFilter) return false;
+    }
+    if (!q) return true;
+    const name = r.metadata?.name?.toLowerCase() ?? "";
+    const symbol = r.metadata?.symbol?.toLowerCase() ?? "";
+    const mint = r.mint.toLowerCase();
+    return name.includes(q) || symbol.includes(q) || mint.includes(q);
+  });
+
+  const filterBtn = (val: RiskFilter, label: string, activeCls: string) => (
+    <button
+      key={val}
+      onClick={() => setRiskFilter(val)}
+      className={`px-2.5 py-1 rounded-full border text-[10px] font-mono font-semibold tracking-wider transition-colors ${
+        riskFilter === val
+          ? activeCls
+          : "border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-600"
+      }`}
+    >
+      {label}
+    </button>
+  );
 
   return (
     <div className="rounded-xl border border-slate-800 bg-card shadow-lg overflow-hidden">
@@ -434,7 +471,11 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
       >
         <span className="text-xs font-mono font-semibold text-muted-foreground tracking-widest">
           RECENT SCANS
-          <span className="ml-2 text-slate-400">({history.length})</span>
+          <span className="ml-2 text-slate-400">
+            {filtered.length === history.length
+              ? `(${history.length})`
+              : `(${filtered.length}/${history.length})`}
+          </span>
         </span>
         <svg
           className={`w-4 h-4 text-slate-500 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
@@ -446,8 +487,33 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
 
       {open && (
         <div className="border-t border-slate-800">
-          <ul className="divide-y divide-slate-800/60">
-            {history.map((r) => (
+          {/* Search + filters */}
+          <div className="px-6 py-3 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center gap-3">
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search by name, symbol, or mint…"
+              className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2
+                         text-xs font-mono text-slate-100 placeholder:text-slate-500
+                         focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30
+                         transition-colors"
+            />
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {filterBtn("all", "ALL", "border-cyan-600 text-cyan-300 bg-cyan-950/40")}
+              {filterBtn("low", "LOW", "border-green-800 text-green-300 bg-green-950/40")}
+              {filterBtn("medium", "MED", "border-yellow-800 text-yellow-300 bg-yellow-950/40")}
+              {filterBtn("high", "HIGH", "border-red-800 text-red-300 bg-red-950/40")}
+            </div>
+          </div>
+
+          {filtered.length === 0 ? (
+            <p className="px-6 py-6 text-xs font-mono text-slate-500 text-center">
+              No scans match your filters.
+            </p>
+          ) : (
+          <ul className="divide-y divide-slate-800/60 max-h-[28rem] overflow-y-auto">
+            {filtered.map((r) => (
               <li key={r.mint}>
                 <button
                   onClick={() => onSelect(r)}
@@ -489,6 +555,7 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
               </li>
             ))}
           </ul>
+          )}
 
           {/* Clear button */}
           <div className="px-6 py-3 border-t border-slate-800 flex justify-end">
@@ -599,7 +666,7 @@ export default function Scanner() {
             console.warn("[VaultTrace] Failed to save scan to history:", err);
             setHistory((prev) => {
               const deduped = prev.filter((r) => r.mint !== completedReport.mint);
-              return [completedReport, ...deduped].slice(0, 10);
+              return [completedReport, ...deduped].slice(0, 200);
             });
           });
         // Fetch price data asynchronously — doesn't block the scan result

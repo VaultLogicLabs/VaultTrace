@@ -6,7 +6,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
 const HISTORY_FILE = path.join(DATA_DIR, "history.json");
 
-export const MAX_HISTORY = 10;
+export const MAX_HISTORY = 200;
 
 let writeQueue = Promise.resolve();
 
