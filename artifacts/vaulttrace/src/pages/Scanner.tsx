@@ -377,7 +377,7 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
       >
         <span className="text-xs font-mono font-semibold text-muted-foreground tracking-widest">
           RECENT SCANS
-          <span className="ml-2 text-slate-600">({history.length})</span>
+          <span className="ml-2 text-slate-400">({history.length})</span>
         </span>
         <svg
           className={`w-4 h-4 text-slate-500 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
@@ -411,19 +411,19 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
                     <p className="text-sm font-mono font-semibold text-slate-200 truncate group-hover:text-cyan-300 transition-colors">
                       {tokenLabel(r)}
                     </p>
-                    <p className="text-xs font-mono text-slate-600 truncate mt-0.5">
+                    <p className="text-xs font-mono text-slate-400 truncate mt-0.5">
                       {r.mint.slice(0, 16)}…
                     </p>
                   </div>
 
                   {/* Timestamp */}
-                  <span className="shrink-0 text-xs font-mono text-slate-600">
+                  <span className="shrink-0 text-xs font-mono text-slate-400">
                     {fmtIso(r.timestamp)}
                   </span>
 
                   {/* Arrow */}
                   <svg
-                    className="shrink-0 w-4 h-4 text-slate-700 group-hover:text-cyan-500 transition-colors"
+                    className="shrink-0 w-4 h-4 text-slate-500 group-hover:text-cyan-500 transition-colors"
                     fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
                   >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -437,7 +437,7 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
           <div className="px-6 py-3 border-t border-slate-800 flex justify-end">
             <button
               onClick={onClear}
-              className="text-xs font-mono text-slate-600 hover:text-red-400 transition-colors"
+              className="text-xs font-mono text-slate-400 hover:text-red-400 transition-colors"
             >
               Clear history
             </button>
@@ -577,7 +577,7 @@ export default function Scanner() {
               SOLANA TOKEN FORENSIC SCANNER
             </p>
           </div>
-          <div className="flex items-center gap-2 text-xs font-mono text-slate-600">
+          <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
             LIVE
           </div>
@@ -659,7 +659,7 @@ export default function Scanner() {
                 </h2>
               </div>
               {(report.metadata?.name || report.metadata?.symbol) && (
-                <p className="mt-1 text-xs font-mono text-slate-600 tracking-widest">
+                <p className="mt-1 text-xs font-mono text-slate-400 tracking-widest">
                   {report.mint.slice(0, 20)}…
                 </p>
               )}
@@ -709,7 +709,7 @@ export default function Scanner() {
                 </p>
                 <RiskGauge score={report.risk?.score ?? 0} />
                 {report.launchTime && (
-                  <p className="mt-4 text-xs text-slate-600 font-mono text-center">
+                  <p className="mt-4 text-xs text-slate-400 font-mono text-center">
                     Launch: {fmtTs(report.launchTime)}
                   </p>
                 )}
@@ -845,7 +845,7 @@ export default function Scanner() {
             )}
 
             {/* Scan Meta */}
-            <div className="text-center text-xs font-mono text-slate-700 pb-4">
+            <div className="text-center text-xs font-mono text-slate-400 pb-4">
               Scanned at {new Date(report.timestamp).toLocaleString()} ·{" "}
               {report.scanDurationSeconds != null
                 ? `${report.scanDurationSeconds}s`
