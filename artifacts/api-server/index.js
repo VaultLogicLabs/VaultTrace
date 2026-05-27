@@ -381,11 +381,15 @@ export async function runScan(mintAddress, options = {}) {
     depth = 6,
     silent = false, // suppress all stdout when called from server
     save = null,
+    onProgress = null, // optional callback for SSE / streaming callers
   } = options;
 
   const startTime = Date.now();
   const tty = !silent; // emit ANSI only in CLI mode
   const lines = [];
+
+  // Fire-and-forget progress emitter for SSE / streaming callers
+  const emit = (ev) => { try { if (onProgress) onProgress(ev); } catch (_) {} };
 
   const report = {
     mint: mintAddress,
@@ -407,9 +411,11 @@ export async function runScan(mintAddress, options = {}) {
     log(ansi("cyan", "─".repeat(65), tty));
     log(ansi("cyan", `  ${title}`, tty));
     log(ansi("cyan", "─".repeat(65), tty));
+    emit({ type: "section", label: title });
   }
   function progress(msg) {
     if (tty) process.stdout.write(ansi("gray", `  ⟳  ${msg}...\r`, tty));
+    emit({ type: "progress", message: msg });
   }
   function clr() {
     if (tty) process.stdout.write("\x1b[2K\r");
@@ -552,6 +558,7 @@ export async function runScan(mintAddress, options = {}) {
     const tokens = parseInt(amount) / 1e6;
     const pct = ((tokens / (totalInTop / 1e6)) * 100).toFixed(1);
 
+    emit({ type: "holder", rank: i + 1, total: topHolders.length, address: short(address) });
     progress(`Holder ${i + 1}/${topHolders.length}: ${short(address)}`);
 
     const [owner, acq] = await Promise.all([

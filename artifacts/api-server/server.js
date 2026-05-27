@@ -37,6 +37,50 @@ app.delete("/api/cache", (_req, res) => {
   res.json({ cleared: before.entries, cache: cacheStats() });
 });
 
+// ── SSE stream endpoint ────────────────────────────────────────────────────
+// GET /api/scan/:mintAddress/stream?top=20&depth=6
+// Server-Sent Events: emits progress events then a final "complete" event.
+app.get("/api/scan/:mintAddress/stream", async (req, res) => {
+  const { mintAddress } = req.params;
+  const topN  = Math.min(50, Math.max(1, parseInt(req.query.top   ?? "20")));
+  const depth = Math.min(10, Math.max(1, parseInt(req.query.depth ?? "6")));
+
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mintAddress)) {
+    return res.status(400).json({ error: "Invalid mint address format." });
+  }
+  if (!process.env.HELIUS_API_KEY) {
+    return res.status(500).json({ error: "HELIUS_API_KEY not set." });
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  const send = (event) => {
+    if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+
+  // Keep proxies and browsers alive during the long scan
+  const keepalive = setInterval(() => {
+    if (!res.writableEnded) res.write(": ping\n\n");
+  }, 15000);
+
+  console.log(`[stream] ${mintAddress}  top=${topN}  depth=${depth}`);
+  try {
+    const report = await runScan(mintAddress, { topN, depth, silent: true, onProgress: send });
+    send({ type: "complete", report });
+    console.log(`[stream] done  ${mintAddress}  score=${report.risk?.score}`);
+  } catch (err) {
+    console.error(`[stream] error ${mintAddress}:`, err.message);
+    send({ type: "error", message: err.message });
+  } finally {
+    clearInterval(keepalive);
+    res.end();
+  }
+});
+
 // ── Main scan endpoint ─────────────────────────────────────────────────────
 // GET /api/scan/:mintAddress?top=20&depth=6
 // Long-running (~60-90s cold, much faster on repeat within the same day).
