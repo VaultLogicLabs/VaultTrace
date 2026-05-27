@@ -57,9 +57,15 @@ interface ClusterInfo {
   pct: number;
 }
 
+interface TokenMetadata {
+  name: string | null;
+  symbol: string | null;
+}
+
 interface ScanReport {
   mint: string;
   timestamp: string;
+  metadata?: TokenMetadata;
   contractSecurity: ContractSecurity;
   launchTime: number | null;
   holders: HolderRow[];
@@ -253,6 +259,25 @@ export default function Scanner() {
         {/* ── Results Dashboard ────────────────────────────────────────── */}
         {status === "complete" && report && (
           <div className="space-y-6 animate-in fade-in duration-500">
+
+            {/* Token identity header */}
+            <div className="text-center">
+              <h2
+                className="text-3xl font-black font-mono tracking-tight"
+                style={{ color: "#22C55E" }}
+              >
+                {report.metadata?.name
+                  ? report.metadata.symbol
+                    ? `${report.metadata.name} ($${report.metadata.symbol})`
+                    : report.metadata.name
+                  : report.mint.slice(0, 8) + "…"}
+              </h2>
+              {(report.metadata?.name || report.metadata?.symbol) && (
+                <p className="mt-1 text-xs font-mono text-slate-600 tracking-widest">
+                  {report.mint.slice(0, 20)}…
+                </p>
+              )}
+            </div>
 
             {/* Risk Score + Summary row */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

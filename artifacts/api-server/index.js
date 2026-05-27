@@ -265,6 +265,31 @@ async function traceChain(start, maxDepth) {
   return chain;
 }
 
+async function getTokenMetadata(mint) {
+  return getCached(`metadata:${mint}`, TTL_24H, async () => {
+    try {
+      const res = await fetch(RPC_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "scanner",
+          method: "getAsset",
+          params: { id: mint },
+        }),
+      });
+      const json = await res.json();
+      const meta = json.result?.content?.metadata ?? {};
+      return {
+        name:   meta.name   ?? null,
+        symbol: meta.symbol ?? null,
+      };
+    } catch {
+      return { name: null, symbol: null };
+    }
+  });
+}
+
 async function getMintAuthority(mint) {
   return getCached(`mintAuth:${mint}`, TTL_24H, async () => {
     const info   = await rpc("getAccountInfo", [mint, { encoding: "jsonParsed" }]);
@@ -407,6 +432,7 @@ export async function runScan(mintAddress, options = {}) {
   const report = {
     mint: mintAddress,
     timestamp: new Date().toISOString(),
+    metadata: { name: null, symbol: null },
     contractSecurity: {},
     launchTime: null,
     holders: [],
@@ -444,6 +470,16 @@ export async function runScan(mintAddress, options = {}) {
   );
   log(`  API     : Helius Mainnet`);
   log(bold("═".repeat(65), tty));
+
+  // ── 0. Token Metadata ───────────────────────────────────────────────────
+  progress("Fetching token metadata");
+  const tokenMeta = await getTokenMetadata(mintAddress);
+  report.metadata = tokenMeta;
+  if (tokenMeta.name || tokenMeta.symbol) {
+    log(
+      `  Token   : ${ansi("green", tokenMeta.name ?? "—", tty)}  ${ansi("cyan", tokenMeta.symbol ? `($${tokenMeta.symbol})` : "", tty)}`,
+    );
+  }
 
   // ── 1. Contract Security ────────────────────────────────────────────────
   section("1 / 7  —  CONTRACT SECURITY");
