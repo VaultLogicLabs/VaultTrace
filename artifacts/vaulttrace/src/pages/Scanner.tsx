@@ -288,6 +288,7 @@ function LpStatusBadge({ lp }: { lp: LpStatus }) {
     partially_locked: { label: "Partially Locked ⚠", cls: "text-yellow-400 border-yellow-800 bg-yellow-950/40" },
     unlocked:         { label: "LP Unlocked 🚨",     cls: "text-red-400 border-red-800 bg-red-950/40" },
     bonding_curve:    { label: "Bonding Curve",      cls: "text-cyan-400 border-cyan-800 bg-cyan-950/40" },
+    found_external:   { label: "Pool Found",         cls: "text-cyan-400 border-cyan-800 bg-cyan-950/40" },
     not_found:        { label: "No Pool Found",      cls: "text-slate-400 border-slate-700 bg-slate-800/40" },
     unknown:          { label: "Unknown",             cls: "text-slate-400 border-slate-700 bg-slate-800/40" },
   };

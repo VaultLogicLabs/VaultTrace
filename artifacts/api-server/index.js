@@ -16,10 +16,33 @@ const DELAY_MS = 220;
 const SYNC_WIN = 30;
 const EARLY_WIN = 300;
 
-const RAYDIUM_AMM = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+const RAYDIUM_AMM      = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"; // Raydium AMM v4
+const RAYDIUM_CPMM     = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"; // Raydium CPMM
+const RAYDIUM_CLMM     = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK"; // Raydium CLMM
+const ORCA_WHIRLPOOL   = "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"; // Orca Whirlpools
+const ORCA_TOKEN_SWAP  = "9W959DqEETiGZocYWCQPaJ6sBmUzgfxXfqGeTEdp3aQP"; // Orca v2 Token Swap
+const METEORA_AMM      = "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB"; // Meteora Dynamic AMM
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
 const NULL_ADDR = "11111111111111111111111111111111";
 const PUMPFUN_PROG = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+
+// AMM program → DEX label. Order matters: when a tx hits multiple programs,
+// the first match wins (Raydium AMM v4 is the most common LP-mint pool type
+// for pump.fun graduates, so it stays at the top).
+const AMM_PROGRAMS = {
+  [RAYDIUM_AMM]:     "raydium",
+  [RAYDIUM_CPMM]:    "raydium_cpmm",
+  [RAYDIUM_CLMM]:    "raydium_clmm",
+  [ORCA_WHIRLPOOL]:  "orca_whirlpool",
+  [ORCA_TOKEN_SWAP]: "orca",
+  [METEORA_AMM]:     "meteora",
+};
+
+// Raydium v4 and CPMM both mint a fungible LP token in the same tx that
+// creates the pool, so we can recover the LP mint via the balance-diff
+// heuristic and check its burn state. CLMM/Whirlpools/Meteora use NFT
+// positions instead, so we can detect pool existence but not LP burn.
+const LP_MINT_DETECTABLE = new Set(["raydium", "raydium_cpmm"]);
 
 const ENTITIES = {
   [PUMPFUN_PROG]: "Pump.fun Program",
@@ -97,6 +120,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // unlocked → burned between two scans run on the same day.
 const CACHE = new Map();
 const TTL_24H = 86_400_000;
+const TTL_7D  = 604_800_000;
 const TTL_6H  =  21_600_000;
 
 function cacheGet(key) {
@@ -147,6 +171,36 @@ export async function getTokenPrice(mint) {
       };
     } catch {
       return { price: null, marketCap: null, volume24h: null };
+    }
+  });
+}
+
+// ── DexScreener pair lookup (LP fallback) ──────────────────────────────────
+// Used by getLpStatus as a last-resort fallback when the on-chain tx scan
+// can't find any known AMM program in the token's history. DexScreener
+// indexes ~every Solana DEX and returns a stable pairAddress + dexId, so
+// it's a reliable way to confirm a pool exists even when we can't determine
+// LP burn state. Long TTL: pair addresses for established tokens are stable.
+export async function getDexScreenerPair(mint) {
+  return getCached(`dexpair:${mint}`, TTL_7D, async () => {
+    try {
+      const res = await fetch(
+        `https://api.dexscreener.com/latest/dex/tokens/${mint}`,
+      );
+      if (!res.ok) return null;
+      const json = await res.json();
+      const pairs = (json.pairs ?? []).filter((p) => p.chainId === "solana");
+      if (!pairs.length) return null;
+      const best = [...pairs].sort(
+        (a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0),
+      )[0];
+      return {
+        pairAddress:  best.pairAddress ?? null,
+        dexId:        best.dexId ?? null,
+        liquidityUsd: best.liquidity?.usd ?? null,
+      };
+    } catch {
+      return null;
     }
   });
 }
@@ -346,9 +400,13 @@ async function getMintAuthority(mint) {
 }
 
 async function getLpStatus(mint, mintSigs) {
-  // LP status uses TTL_6H (not 24 h) because an unlocked pool could be burned
-  // between two scans run on the same day. Once status is "burned" or
-  // "bonding_curve" it won't regress, but we don't know that at read time.
+  // Caching strategy:
+  //   - Pool FOUND  (burned / partially_locked / unlocked / bonding_curve /
+  //     found_external) → TTL_7D. Once we've located the pool/LP mint, that
+  //     identity is immutable; burn status can change, but burned never
+  //     regresses, and the cost of a stale "unlocked" read is just one stale
+  //     scan within a week — far cheaper than the deep-scan cost on miss.
+  //   - Pool NOT FOUND / unknown → TTL_6H, so a future scan retries soon.
   const cached = cacheGet(`lpStatus:${mint}`);
   if (cached !== undefined) return cached;
 
@@ -360,80 +418,103 @@ async function getLpStatus(mint, mintSigs) {
     burnedPct: null,
     lockedAddr: null,
     graduated: false,
+    pairAddress: null,
     status: "unknown",
   };
 
-  const txsToScan = mintSigs.slice(0, 80);
+  // Deep scan: 500 oldest signatures (vs. the previous 80). Tokens with a
+  // long pre-LP minting/distribution phase (e.g. $WORLDCUP) created the LP
+  // well outside the original window, so we look much further back.
+  const txsToScan = mintSigs.slice(0, 500);
   for (const sigEntry of txsToScan) {
     await sleep(DELAY_MS);
     const tx = await getTx(sigEntry.signature);
     if (!tx) continue;
     const accts = getAccounts(tx);
-    if (!accts.includes(RAYDIUM_AMM)) continue;
 
-    const preBals = tx.meta?.preTokenBalances ?? [];
-    const postBals = tx.meta?.postTokenBalances ?? [];
-    const preMints = new Set(preBals.map((b) => b.mint));
-    let lpMint = null;
-    for (const bal of postBals) {
-      if (bal.mint === mint || bal.mint === WSOL_MINT) continue;
-      if (!preMints.has(bal.mint)) {
-        lpMint = bal.mint;
-        break;
-      }
+    // Match against any known AMM program (not just Raydium v4). First hit wins.
+    let matchedDex = null;
+    for (const acc of accts) {
+      if (AMM_PROGRAMS[acc]) { matchedDex = AMM_PROGRAMS[acc]; break; }
     }
-    if (!lpMint) {
+    if (!matchedDex) continue;
+
+    // For Raydium AMM v4 / CPMM, the same tx that creates the pool also mints
+    // the fungible LP token, so the balance-diff heuristic recovers the LP mint.
+    if (LP_MINT_DETECTABLE.has(matchedDex)) {
+      const preBals = tx.meta?.preTokenBalances ?? [];
+      const postBals = tx.meta?.postTokenBalances ?? [];
+      const preMints = new Set(preBals.map((b) => b.mint));
+      let lpMint = null;
       for (const bal of postBals) {
-        if (bal.mint !== mint && bal.mint !== WSOL_MINT) {
+        if (bal.mint === mint || bal.mint === WSOL_MINT) continue;
+        if (!preMints.has(bal.mint)) {
           lpMint = bal.mint;
           break;
         }
       }
-    }
-    if (!lpMint) continue;
+      if (!lpMint) {
+        for (const bal of postBals) {
+          if (bal.mint !== mint && bal.mint !== WSOL_MINT) {
+            lpMint = bal.mint;
+            break;
+          }
+        }
+      }
+      if (!lpMint) continue;
 
-    result.poolType = "raydium";
-    result.lpMint = lpMint;
-    result.graduated = accts.includes(PUMPFUN_PROG);
+      result.poolType = matchedDex;
+      result.lpMint = lpMint;
+      result.graduated = accts.includes(PUMPFUN_PROG);
 
-    await sleep(DELAY_MS);
-    const supplyData = await rpc("getTokenSupply", [lpMint]);
-    const lpSupply = parseInt(supplyData?.value?.amount ?? "-1");
-    result.lpSupply = lpSupply;
+      await sleep(DELAY_MS);
+      const supplyData = await rpc("getTokenSupply", [lpMint]);
+      const lpSupply = parseInt(supplyData?.value?.amount ?? "-1");
+      result.lpSupply = lpSupply;
 
-    if (lpSupply === 0) {
-      result.burned = true;
-      result.burnedPct = 100;
-      result.status = "burned";
-      cacheSet(`lpStatus:${mint}`, result, TTL_6H);
+      if (lpSupply === 0) {
+        result.burned = true;
+        result.burnedPct = 100;
+        result.status = "burned";
+        cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+        return result;
+      }
+
+      await sleep(DELAY_MS);
+      const largest = await rpc("getTokenLargestAccounts", [lpMint]);
+      const holders = largest?.value ?? [];
+      let burnedAmt = 0;
+      for (const h of holders.slice(0, 5)) {
+        await sleep(DELAY_MS);
+        const owner = await getTokenAcctOwner(h.address);
+        if (owner === NULL_ADDR) {
+          burnedAmt += parseInt(h.amount ?? "0");
+          result.lockedAddr = h.address;
+        }
+      }
+      if (lpSupply > 0) {
+        result.burnedPct = Math.round((burnedAmt / lpSupply) * 100);
+        result.burned = result.burnedPct >= 99;
+        result.status = result.burned
+          ? "burned"
+          : result.burnedPct >= 50
+            ? "partially_locked"
+            : "unlocked";
+      }
+      cacheSet(`lpStatus:${mint}`, result, TTL_7D);
       return result;
     }
 
-    await sleep(DELAY_MS);
-    const largest = await rpc("getTokenLargestAccounts", [lpMint]);
-    const holders = largest?.value ?? [];
-    let burnedAmt = 0;
-    for (const h of holders.slice(0, 5)) {
-      await sleep(DELAY_MS);
-      const owner = await getTokenAcctOwner(h.address);
-      if (owner === NULL_ADDR) {
-        burnedAmt += parseInt(h.amount ?? "0");
-        result.lockedAddr = h.address;
-      }
-    }
-    if (lpSupply > 0) {
-      result.burnedPct = Math.round((burnedAmt / lpSupply) * 100);
-      result.burned = result.burnedPct >= 99;
-      result.status = result.burned
-        ? "burned"
-        : result.burnedPct >= 50
-          ? "partially_locked"
-          : "unlocked";
-    }
-    cacheSet(`lpStatus:${mint}`, result, TTL_6H);
+    // CLMM / Whirlpool / Meteora — pool exists, but burn analysis is
+    // protocol-specific (NFT positions or per-position liquidity). Report
+    // existence and let the UI surface it as "Pool Found".
+    result.poolType = matchedDex;
+    result.status = "found_external";
+    cacheSet(`lpStatus:${mint}`, result, TTL_7D);
     return result;
   }
 
+  // Tx-scan miss → check for Pump.fun bonding curve (token hasn't graduated).
   const recentSigs =
     (await rpc("getSignaturesForAddress", [mint, { limit: 5 }])) ?? [];
   for (const s of recentSigs) {
@@ -443,10 +524,24 @@ async function getLpStatus(mint, mintSigs) {
     if (getAccounts(tx).includes(PUMPFUN_PROG)) {
       result.poolType = "pumpfun";
       result.status = "bonding_curve";
-      cacheSet(`lpStatus:${mint}`, result, TTL_6H);
+      cacheSet(`lpStatus:${mint}`, result, TTL_7D);
       return result;
     }
   }
+
+  // Final fallback: DexScreener targeted query. If the token has any indexed
+  // pair on Solana, surface it as "found_external" with the dex name + pair
+  // address. This catches pools that exist but were created outside our
+  // 500-tx scan window or on a DEX program we don't recognize yet.
+  const pair = await getDexScreenerPair(mint);
+  if (pair && pair.pairAddress) {
+    result.poolType = pair.dexId ?? "external";
+    result.pairAddress = pair.pairAddress;
+    result.status = "found_external";
+    cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+    return result;
+  }
+
   result.status = "not_found";
   cacheSet(`lpStatus:${mint}`, result, TTL_6H);
   return result;
@@ -954,16 +1049,35 @@ export async function runScan(mintAddress, options = {}) {
     );
   } else if (lp.status === "not_found") {
     log(
-      ansi("gray", "  ℹ  No Raydium pool found in scanned transactions.", tty),
+      ansi("gray", "  ℹ  No AMM pool found on-chain or via DexScreener.", tty),
     );
     log(
       ansi(
         "gray",
-        "     Token may use a different DEX or pool was created outside the scan window.",
+        "     Token may be pre-launch or trading only on an unindexed venue.",
         tty,
       ),
     );
-  } else if (lp.poolType === "raydium") {
+  } else if (lp.status === "found_external") {
+    log(
+      `  Pool type     : ${lp.poolType ?? "external"}${lp.pairAddress ? " (via DexScreener)" : ""}`,
+    );
+    if (lp.pairAddress) log(`  Pair address  : ${lp.pairAddress}`);
+    log(
+      ansi(
+        "yellow",
+        "  ⚠   Pool detected, but LP burn status can't be determined for this DEX type.",
+        tty,
+      ),
+    );
+    log(
+      ansi(
+        "gray",
+        "     CLMM / Whirlpool / Meteora pools use NFT positions, not fungible LP tokens.",
+        tty,
+      ),
+    );
+  } else if (LP_MINT_DETECTABLE.has(lp.poolType)) {
     log(
       `  Pool type     : ${lp.graduated ? "Pump.fun → Raydium (graduated)" : "Raydium AMM"}`,
     );
