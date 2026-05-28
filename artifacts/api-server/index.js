@@ -237,12 +237,18 @@ export async function getTokenChart(mint) {
       const direction =
         last > first ? "up" : last < first ? "down" : "flat";
 
+      const priceChange24h =
+        first !== 0
+          ? Math.round(((last - first) / first) * 10_000) / 100
+          : null;
+
       return {
         candles: chronological.map(([t, o, h, l, c, v]) => ({ t, o, h, l, c, v })),
         direction,
+        priceChange24h,
       };
     } catch {
-      return { candles: [], direction: null };
+      return { candles: [], direction: null, priceChange24h: null };
     }
   });
 }

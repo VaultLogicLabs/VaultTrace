@@ -86,6 +86,7 @@ interface Candle {
 interface TokenChartData {
   candles: Candle[];
   direction: "up" | "down" | "flat" | null;
+  priceChange24h: number | null;
 }
 
 interface ScanReport {
@@ -366,7 +367,23 @@ function PriceSparkline({ data }: { data: TokenChartData }) {
 
   return (
     <div className="flex flex-col items-center">
-      <p className="text-xs font-mono text-slate-500 tracking-widest mb-0.5">24H CHART</p>
+      <div className="flex items-baseline gap-1.5 mb-0.5">
+        <p className="text-xs font-mono text-slate-500 tracking-widest">24H CHART</p>
+        {data.priceChange24h != null && (
+          <span
+            className={`text-[10px] font-mono font-semibold ${
+              data.priceChange24h > 0
+                ? "text-green-400"
+                : data.priceChange24h < 0
+                  ? "text-red-400"
+                  : "text-slate-400"
+            }`}
+          >
+            {data.priceChange24h > 0 ? "+" : ""}
+            {data.priceChange24h.toFixed(2)}%
+          </span>
+        )}
+      </div>
       <div style={{ width: 120, height: 40 }}>
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={chartPoints} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
