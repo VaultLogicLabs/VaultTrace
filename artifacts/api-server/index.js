@@ -81,6 +81,32 @@ const LP_EXCLUDE = new Set([
   "EhYXq3ANp5nAerUpbSgd7VK2RRcxK1zNuSQ755G5Dbqk",  // Raydium Bundler
 ]);
 
+// ── LP detection helpers ────────────────────────────────────────────────────
+// Fast-path: statically-known program-wide authority PDAs.
+// These are single, shared accounts that Raydium / Pump.fun use as the vault
+// owner for every pool they create.  Checking owner membership here is O(1)
+// and avoids an RPC round-trip for the most common case.
+const DEX_AUTHORITY_ADDRS = new Set([
+  "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1", // Raydium AMM v4 authority
+  "GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ",  // Raydium CPMM authority
+  "7rQ1QFNosMkUCuh7Z7fPbTHvh73b68sQYdirycEzJVuw",  // Orca Whirlpool authority
+  PUMPFUN_PROG,                                      // Pump.fun bonding-curve program
+  ...Object.keys(AMM_PROGRAMS),                      // DEX program IDs themselves
+]);
+
+// On-chain tier: programs that are listed as the Solana "owner" of DEX vault
+// PDAs when queried via getMultipleAccountsInfo.  Any holder whose wallet
+// account is owned by one of these programs is a DEX-controlled vault.
+const DEX_PROGRAM_OWNERS = new Set([
+  RAYDIUM_AMM,
+  RAYDIUM_CPMM,
+  RAYDIUM_CLMM,
+  ORCA_WHIRLPOOL,
+  ORCA_TOKEN_SWAP,
+  METEORA_AMM,
+  PUMPFUN_PROG,
+].map((a) => a.toLowerCase()));
+
 // ── ANSI (CLI only) ────────────────────────────────────────────────────────
 const C = {
   reset: "\x1b[0m",
@@ -1135,16 +1161,68 @@ export async function runScan(mintAddress, options = {}) {
 
   report.contractSecurity.lp = lp;
 
-  // Back-fill isLP flag on holder rows now that we know the pool address.
-  // A holder is the LP if its token account is owned by a known AMM program
-  // or if the owner / token-account address matches the detected pool address.
+  // Back-fill isLP flag — three-tier, case-insensitive detection:
+  //
+  //   Tier 1 — Fast-path static check (no RPC):
+  //     holder.owner is in DEX_AUTHORITY_ADDRS (known program-wide PDAs
+  //     like the Raydium v4 authority, or a DEX program ID itself).
+  //
+  //   Tier 2 — Pair-address match (no RPC):
+  //     holder.owner or holder.tokenAcct equals the detected pairAddress.
+  //
+  //   Tier 3 — On-chain program-ownership check (one batch RPC call):
+  //     For every unique owner not already resolved by tiers 1–2, call
+  //     getMultipleAccountsInfo.  If the returned account's "owner" field
+  //     (the Solana program that controls that PDA) is a DEX program, the
+  //     holder wallet is a DEX vault — flag it as LP.
+  //     This catches per-pool PDAs used by Meteora, Orca CLMM, Raydium CPMM,
+  //     and any other DEX whose vault authority PDAs are not statically known.
+
+  const lpPairLower = lp.pairAddress?.toLowerCase() ?? "";
+
+  // Addresses already definitively resolved — skip them in the RPC batch.
+  const fastResolved = new Set();
   for (const row of holderRows) {
+    const ol = row.owner.toLowerCase();
+    if (
+      DEX_AUTHORITY_ADDRS.has(row.owner) ||
+      (lpPairLower && (ol === lpPairLower || row.tokenAcct.toLowerCase() === lpPairLower))
+    ) {
+      fastResolved.add(ol);
+    }
+  }
+
+  // Collect unique owner addresses that still need an on-chain lookup.
+  const toCheck = [...new Set(
+    holderRows
+      .map((r) => r.owner)
+      .filter((addr) => !fastResolved.has(addr.toLowerCase())),
+  )];
+
+  // Single batch RPC call — resolve the program owner of every candidate PDA.
+  const onChainLpOwners = new Set(); // lowercase addrs confirmed as DEX vaults
+  if (toCheck.length) {
+    try {
+      const infos = await rpc("getMultipleAccountsInfo", [
+        toCheck,
+        { encoding: "base64" },
+      ]);
+      (infos?.value ?? []).forEach((info, i) => {
+        if (DEX_PROGRAM_OWNERS.has((info?.owner ?? "").toLowerCase())) {
+          onChainLpOwners.add(toCheck[i].toLowerCase());
+        }
+      });
+    } catch { /* non-fatal; fall back to fast-path results only */ }
+  }
+
+  // Apply flags to all rows.
+  for (const row of holderRows) {
+    const ol = row.owner.toLowerCase();
+    const al = row.tokenAcct.toLowerCase();
     row.isLP = !!(
-      AMM_PROGRAMS[row.owner] ||
-      (lp.pairAddress && (
-        row.owner === lp.pairAddress ||
-        row.tokenAcct === lp.pairAddress
-      ))
+      DEX_AUTHORITY_ADDRS.has(row.owner) ||
+      onChainLpOwners.has(ol) ||
+      (lpPairLower && (ol === lpPairLower || al === lpPairLower))
     );
   }
 
