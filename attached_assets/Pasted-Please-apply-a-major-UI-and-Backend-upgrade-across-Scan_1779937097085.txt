@@ -1,0 +1,14 @@
+Please apply a major UI and Backend upgrade across `Scanner.tsx` and `index.js`. Treat this as a strict checklist and do not skip any steps.
+
+IN SCANNER.TSX (PHASE 1 UI UPGRADES):
+1. THE "TOTAL BUNDLED" BANNER: Just above the "Top 20 Holders" table, check if `report.clusters` has data. If it does, calculate the total combined percentage of all clusters and render a prominent, eye-catching warning banner (e.g., a subtle red or orange border/background) that says: "⚠️ WARNING: Coordinated Bundles Control [X]% of Supply across [Y] wallets."
+2. VISUAL CLUSTER BADGES: In the Top 20 Holders table, replace the generic "🔗" icon. Map the clusters so that if multiple holders share the same parent funder, they get a shared, color-coded badge under the Flags column (e.g., "🟣 Cluster A", "🔵 Cluster B"). 
+3. AUDIT CHECKLIST UI: Under the "RISK SCORE" section, transform the current text list into a clean UI checklist. Map `report.risk.signals` with corresponding severity icons (🔴 Critical, 🟠 High, 🟡 Medium). Also, explicitly render the "Clean Signals" as green checks (✅ Mint Authority Revoked, ✅ Freeze Authority Disabled, etc.) based on `report.contractSecurity`.
+4. CREATOR TRACK RECORD UI: Underneath the Risk Score, add a small, sleek stat box displaying the new `report.creatorAudit` data from the backend (e.g., Creator Address, and a "⚠️ Fresh Wallet" warning if applicable).
+
+IN INDEX.JS (PHASE 2 BACKEND AUDIT):
+5. IDENTIFY CREATOR: In Step 3 (Token Launch Time), identify the exact wallet address that funded the genesis mint transaction (the creator/deployer).
+6. FRESH WALLET CHECK: Fetch the transaction history length (signature count) of this creator wallet using a quick `getSignaturesForAddress` call (limit 50). If the wallet has fewer than 10 total transactions, flag it as a massive risk. 
+7. EXPORT DATA: Add this to the final output as `report.creatorAudit = { address: creatorWallet, txCount: number, isFresh: boolean }`. 
+
+Please apply all these changes cleanly and restart the server so they take effect.

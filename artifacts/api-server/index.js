@@ -863,6 +863,35 @@ export async function runScan(mintAddress, options = {}) {
     }
   }
 
+  // ── 3b. Creator Audit ────────────────────────────────────────────────────
+  // Identify the wallet that funded the genesis mint transaction and check if
+  // it is a "fresh" wallet (< 10 lifetime txns = throwaway / disposable risk).
+  let creatorWallet = null;
+  let creatorTxCount = null;
+  let creatorIsFresh = false;
+  if (mintSigs.length > 0) {
+    try {
+      const genesisTx = await getTx(mintSigs[0].signature);
+      const accounts = getAccounts(genesisTx);
+      creatorWallet = accounts[0] ?? null; // fee payer / signer is first account key
+    } catch { /* non-fatal */ }
+  }
+  if (creatorWallet) {
+    try {
+      const creatorSigs =
+        (await rpc("getSignaturesForAddress", [creatorWallet, { limit: 50 }])) ?? [];
+      creatorTxCount = creatorSigs.length;
+      creatorIsFresh = creatorTxCount < 10;
+      log(`  Creator wallet : ${short(creatorWallet)}`);
+      if (creatorIsFresh) {
+        log(ansi("red", `  🚨  Fresh wallet — only ${creatorTxCount} lifetime txn(s). High risk.`, tty));
+      } else {
+        log(`  Creator txns   : ${creatorTxCount}${creatorTxCount >= 50 ? "+" : ""}`);
+      }
+    } catch { /* non-fatal */ }
+  }
+  report.creatorAudit = { address: creatorWallet, txCount: creatorTxCount, isFresh: creatorIsFresh };
+
   // ── 4. Holder Analysis ──────────────────────────────────────────────────
   section("4 / 7  —  HOLDER ANALYSIS (funding + timing)");
   log(
@@ -1463,6 +1492,15 @@ export async function runScan(mintAddress, options = {}) {
     top3Pct: parseFloat(top3Pct.toFixed(2)),
     concentrated: supplyConcentrated,
   };
+
+  if (creatorIsFresh && creatorWallet) {
+    score += 20;
+    signals.push({
+      label: `Creator is a fresh wallet (${creatorTxCount} lifetime txn${creatorTxCount === 1 ? "" : "s"} — disposable wallet risk)`,
+      pts: 20,
+      severity: "high",
+    });
+  }
 
   score = Math.min(100, score);
   const riskLabel =

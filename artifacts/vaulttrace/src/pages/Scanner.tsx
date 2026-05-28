@@ -90,6 +90,12 @@ interface TokenChartData {
   priceChange24h: number | null;
 }
 
+interface CreatorAudit {
+  address: string | null;
+  txCount: number | null;
+  isFresh: boolean;
+}
+
 interface ScanReport {
   mint: string;
   timestamp: string;
@@ -100,6 +106,7 @@ interface ScanReport {
   clusters: ClusterInfo[];
   snipers: number[];
   risk: Risk;
+  creatorAudit?: CreatorAudit;
   scanDurationSeconds?: number;
 }
 
@@ -907,6 +914,13 @@ export default function Scanner() {
   }, []);
 
   const clusterRanks = report?.clusters?.flatMap((c) => c.rows) ?? [];
+  const CLUSTER_EMOJIS = ["🟣", "🔵", "🟠", "🟤", "🩷", "🟡"];
+  const clusterBadgeMap = new Map<number, { label: string; emoji: string }>();
+  (report?.clusters ?? []).forEach((c, idx) => {
+    const emoji = CLUSTER_EMOJIS[idx % CLUSTER_EMOJIS.length];
+    const letter = String.fromCharCode(65 + idx);
+    c.rows.forEach((rank) => clusterBadgeMap.set(rank, { label: `Cluster ${letter}`, emoji }));
+  });
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -1183,19 +1197,110 @@ export default function Scanner() {
               </div>
             </div>
 
-            {/* Risk Signals */}
-            {report.risk?.signals?.length > 0 && (
+            {/* Audit Checklist — risk signals with severity icons + clean signals */}
+            {(report.risk?.signals?.length > 0 || report.contractSecurity) && (
               <div className="rounded-xl border border-slate-800 bg-card p-5 shadow-lg">
                 <p className="text-xs font-mono font-semibold text-muted-foreground tracking-widest mb-4">
-                  RISK SIGNALS
+                  AUDIT CHECKLIST
                 </p>
-                <div>
-                  {report.risk.signals.map((s, i) => (
-                    <SignalRow key={i} signal={s} />
-                  ))}
+                <div className="space-y-0">
+                  {report.risk.signals.map((s, i) => {
+                    const icon = s.severity === "critical" ? "🔴" : s.severity === "high" ? "🟠" : "🟡";
+                    return (
+                      <div key={i} className="flex items-start gap-2 py-1.5 border-b border-slate-800/60">
+                        <span className="text-sm flex-shrink-0 mt-0.5">{icon}</span>
+                        <span className="flex-1 text-xs font-mono text-slate-200 min-w-0">{s.label}</span>
+                        <span className={`text-xs font-mono font-bold flex-shrink-0 ${
+                          s.severity === "critical" ? "text-red-400" : s.severity === "high" ? "text-orange-400" : "text-yellow-400"
+                        }`}>+{s.pts}</span>
+                      </div>
+                    );
+                  })}
+                  {!report.contractSecurity.mintUnrevoked && (
+                    <div className="flex items-center gap-2 py-1.5 border-b border-slate-800/60">
+                      <span className="text-sm">✅</span>
+                      <span className="text-xs font-mono text-green-400">Mint Authority Revoked</span>
+                    </div>
+                  )}
+                  {!report.contractSecurity.freezeUnrevoked && (
+                    <div className="flex items-center gap-2 py-1.5 border-b border-slate-800/60">
+                      <span className="text-sm">✅</span>
+                      <span className="text-xs font-mono text-green-400">Freeze Authority Disabled</span>
+                    </div>
+                  )}
+                  {report.contractSecurity.lp?.status === "burned" && (
+                    <div className="flex items-center gap-2 py-1.5 border-b border-slate-800/60">
+                      <span className="text-sm">✅</span>
+                      <span className="text-xs font-mono text-green-400">LP Tokens Burned</span>
+                    </div>
+                  )}
+                  {(report.clusters?.length ?? 0) === 0 && (
+                    <div className="flex items-center gap-2 py-1.5 border-b border-slate-800/60">
+                      <span className="text-sm">✅</span>
+                      <span className="text-xs font-mono text-green-400">No Funding Clusters Detected</span>
+                    </div>
+                  )}
+                  {(report.snipers?.length ?? 0) === 0 && (
+                    <div className="flex items-center gap-2 py-1.5">
+                      <span className="text-sm">✅</span>
+                      <span className="text-xs font-mono text-green-400">No Same-Block Snipers</span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
+
+            {/* Creator Audit */}
+            {report.creatorAudit?.address && (
+              <div className="rounded-xl border border-slate-800 bg-card p-5 shadow-lg">
+                <p className="text-xs font-mono font-semibold text-muted-foreground tracking-widest mb-4">
+                  CREATOR AUDIT
+                </p>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-mono text-slate-400">Creator Wallet</span>
+                    <a
+                      href={`https://solscan.io/account/${report.creatorAudit.address}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs font-mono text-slate-300 hover:text-cyan-400 transition-colors"
+                    >
+                      {shortAddr(report.creatorAudit.address)}
+                    </a>
+                  </div>
+                  {report.creatorAudit.txCount !== null && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono text-slate-400">Lifetime Txns</span>
+                      <span className={`text-xs font-mono font-semibold ${
+                        report.creatorAudit.isFresh ? "text-red-400" : "text-green-400"
+                      }`}>
+                        {report.creatorAudit.txCount}{report.creatorAudit.txCount >= 50 ? "+" : ""}
+                      </span>
+                    </div>
+                  )}
+                  {report.creatorAudit.isFresh && (
+                    <div className="flex items-center gap-2 bg-red-950/40 border border-red-800 rounded-lg px-3 py-2">
+                      <span>⚠️</span>
+                      <span className="text-xs font-mono text-red-400 font-semibold">Fresh Wallet — High Risk</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Bundled Supply Warning Banner */}
+            {(report.clusters?.length ?? 0) > 0 && (() => {
+              const totalPct = report.clusters.reduce((s, c) => s + c.pct, 0);
+              const totalWallets = report.clusters.reduce((s, c) => s + c.rows.length, 0);
+              return (
+                <div className="rounded-xl border border-orange-700/60 bg-orange-950/30 p-4 flex items-center gap-3">
+                  <span className="text-xl flex-shrink-0">⚠️</span>
+                  <p className="text-sm font-mono font-semibold text-orange-300">
+                    WARNING: Coordinated Bundles Control {totalPct.toFixed(1)}% of Supply across {totalWallets} wallets
+                  </p>
+                </div>
+              );
+            })()}
 
             {/* Holders Table */}
             {report.holders?.length > 0 && (() => {
@@ -1213,7 +1318,7 @@ export default function Scanner() {
                         <span className="text-red-400">🎯</span> Sniper
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="text-yellow-400">🔗</span> Cluster
+                        <span>🟣</span> Cluster
                       </span>
                       <span className="flex items-center gap-1">
                         <span className="text-cyan-400">⚡</span> Known entity
@@ -1332,9 +1437,14 @@ export default function Scanner() {
                                   {isSniper && (
                                     <span title="Same-block sniper">🎯</span>
                                   )}
-                                  {isCluster && (
-                                    <span title="Funding cluster">🔗</span>
-                                  )}
+                                  {isCluster && (() => {
+                                    const badge = clusterBadgeMap.get(h.rank);
+                                    return badge ? (
+                                      <span title={badge.label} className="text-xs whitespace-nowrap">{badge.emoji} {badge.label.split(" ")[1]}</span>
+                                    ) : (
+                                      <span title="Funding cluster">🟣</span>
+                                    );
+                                  })()}
                                   {!!h.funderLabel && (
                                     <span title={h.funderLabel ?? ""}>⚡</span>
                                   )}
