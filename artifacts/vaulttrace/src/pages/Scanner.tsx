@@ -46,6 +46,7 @@ interface HolderRow {
   rank: number;
   tokenAcct: string;
   owner: string;
+  isLP?: boolean;
   tokens: number;
   pct: number;
   buyTime: number | null;
@@ -1217,6 +1218,9 @@ export default function Scanner() {
                       <span className="flex items-center gap-1">
                         <span className="text-cyan-400">⚡</span> Known entity
                       </span>
+                      <span className="flex items-center gap-1">
+                        <span className="text-blue-400">💧</span> Liquidity Pool
+                      </span>
                     </div>
                   </div>
 
@@ -1322,6 +1326,9 @@ export default function Scanner() {
                               </td>
                               <td className="px-4 py-2.5 text-center">
                                 <span className="flex items-center justify-center gap-0.5">
+                                  {h.isLP && (
+                                    <span title="Liquidity Pool">💧</span>
+                                  )}
                                   {isSniper && (
                                     <span title="Same-block sniper">🎯</span>
                                   )}

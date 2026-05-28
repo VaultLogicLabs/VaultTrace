@@ -218,35 +218,52 @@ export async function getTokenChart(mint) {
       const pair = await getDexScreenerPair(mint);
       if (!pair?.pairAddress) return { candles: [], direction: null };
 
-      // GeckoTerminal free OHLCV API — 24 hourly candles
-      const res = await fetch(
+      const GT_HEADERS = { Accept: "application/json;version=20230302" };
+
+      // Helper: turn a raw GeckoTerminal ohlcv_list into the chart result object.
+      // raw is newest-first; we reverse to chronological order.
+      function buildResult(raw) {
+        const c = [...raw].reverse();
+        const first = c[0][1];           // open of oldest candle
+        const last  = c[c.length - 1][4]; // close of newest candle
+        return {
+          candles: c.map(([t, o, h, l, cl, v]) => ({ t, o, h, l, c: cl, v })),
+          direction: last > first ? "up" : last < first ? "down" : "flat",
+          priceChange24h: first !== 0
+            ? Math.round(((last - first) / first) * 10_000) / 100
+            : null,
+        };
+      }
+
+      // Primary: GeckoTerminal hourly candles (24 h window)
+      const hourRes = await fetch(
         `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pair.pairAddress}/ohlcv/hour` +
         `?aggregate=1&limit=24`,
-        { headers: { Accept: "application/json;version=20230302" } },
+        { headers: GT_HEADERS },
       );
-      if (!res.ok) return { candles: [], direction: null };
-      const json = await res.json();
-      // Each entry: [timestamp_s, open, high, low, close, volume]
-      const raw = json?.data?.attributes?.ohlcv_list ?? [];
-      if (!raw.length) return { candles: [], direction: null };
+      if (!hourRes.ok) return { candles: [], direction: null, priceChange24h: null };
+      const hourJson = await hourRes.json();
+      const hourRaw  = hourJson?.data?.attributes?.ohlcv_list ?? [];
 
-      // GeckoTerminal returns newest-first; reverse to chronological order
-      const chronological = [...raw].reverse();
-      const first = chronological[0][1]; // open of oldest candle
-      const last  = chronological[chronological.length - 1][4]; // close of newest
-      const direction =
-        last > first ? "up" : last < first ? "down" : "flat";
+      // If ≥ 3 hourly candles exist, use them directly.
+      if (hourRaw.length >= 3) return buildResult(hourRaw);
 
-      const priceChange24h =
-        first !== 0
-          ? Math.round(((last - first) / first) * 10_000) / 100
-          : null;
-
-      return {
-        candles: chronological.map(([t, o, h, l, c, v]) => ({ t, o, h, l, c, v })),
-        direction,
-        priceChange24h,
-      };
+      // Fallback: token is brand-new — fetch 60 minute candles for a proper
+      // high-resolution sparkline instead of a single dot.
+      const minRes = await fetch(
+        `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pair.pairAddress}/ohlcv/minute` +
+        `?aggregate=1&limit=60`,
+        { headers: GT_HEADERS },
+      );
+      if (!minRes.ok) {
+        // Return the sparse hourly data rather than nothing
+        return hourRaw.length ? buildResult(hourRaw) : { candles: [], direction: null, priceChange24h: null };
+      }
+      const minJson = await minRes.json();
+      const minRaw  = minJson?.data?.attributes?.ohlcv_list ?? [];
+      return minRaw.length
+        ? buildResult(minRaw)
+        : { candles: [], direction: null, priceChange24h: null };
     } catch {
       return { candles: [], direction: null, priceChange24h: null };
     }
@@ -1117,6 +1134,19 @@ export async function runScan(mintAddress, options = {}) {
   clr();
 
   report.contractSecurity.lp = lp;
+
+  // Back-fill isLP flag on holder rows now that we know the pool address.
+  // A holder is the LP if its token account is owned by a known AMM program
+  // or if the owner / token-account address matches the detected pool address.
+  for (const row of holderRows) {
+    row.isLP = !!(
+      AMM_PROGRAMS[row.owner] ||
+      (lp.pairAddress && (
+        row.owner === lp.pairAddress ||
+        row.tokenAcct === lp.pairAddress
+      ))
+    );
+  }
 
   if (lp.status === "bonding_curve") {
     log(
