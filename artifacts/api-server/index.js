@@ -160,6 +160,15 @@ function cacheSet(key, value, ttl = TTL_24H) {
   CACHE.set(key, { value, expiresAt: Date.now() + ttl });
 }
 
+// Active cache cleanup — runs every hour, removes expired entries to prevent
+// long-running memory leaks from dead-token scans accumulating in CACHE.
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of CACHE) {
+    if (now > entry.expiresAt) CACHE.delete(key);
+  }
+}, 60 * 60 * 1000);
+
 // Fetch-or-populate: returns cached value when fresh, otherwise calls fn(),
 // stores the result, and returns it.
 async function getCached(key, ttl, fn) {
@@ -702,9 +711,12 @@ export async function runScan(mintAddress, options = {}) {
   log(`  API     : Helius Mainnet`);
   log(bold("═".repeat(65), tty));
 
-  // ── 0. Token Metadata ───────────────────────────────────────────────────
-  progress("Fetching token metadata");
-  const tokenMeta = await getTokenMetadata(mintAddress);
+  // ── 0 + 1. Token Metadata & Mint Authority (parallel) ───────────────────
+  progress("Fetching token metadata & authority");
+  const [tokenMeta, authority] = await Promise.all([
+    getTokenMetadata(mintAddress),
+    getMintAuthority(mintAddress),
+  ]);
   report.metadata = tokenMeta;
   if (tokenMeta.name || tokenMeta.symbol) {
     log(
@@ -714,8 +726,6 @@ export async function runScan(mintAddress, options = {}) {
 
   // ── 1. Contract Security ────────────────────────────────────────────────
   section("1 / 7  —  CONTRACT SECURITY");
-  progress("Querying mint account authority fields");
-  const authority = await getMintAuthority(mintAddress);
   clr();
 
   const mintUnrevoked =
@@ -1199,20 +1209,25 @@ export async function runScan(mintAddress, options = {}) {
       .filter((addr) => !fastResolved.has(addr.toLowerCase())),
   )];
 
-  // Single batch RPC call — resolve the program owner of every candidate PDA.
+  // Chunked batch RPC — Solana nodes reject payloads with > 100 accounts.
+  // Split toCheck into ≤ 100-address chunks, sleep between chunks to avoid
+  // rate-limiting, and merge results into a single Set.
   const onChainLpOwners = new Set(); // lowercase addrs confirmed as DEX vaults
-  if (toCheck.length) {
+  const CHUNK_SIZE = 100;
+  for (let i = 0; i < toCheck.length; i += CHUNK_SIZE) {
+    const chunk = toCheck.slice(i, i + CHUNK_SIZE);
     try {
       const infos = await rpc("getMultipleAccounts", [
-        toCheck,
+        chunk,
         { encoding: "base64" },
       ]);
-      (infos?.value ?? []).forEach((info, i) => {
+      (infos?.value ?? []).forEach((info, j) => {
         if (DEX_PROGRAM_OWNERS.has((info?.owner ?? "").toLowerCase())) {
-          onChainLpOwners.add(toCheck[i].toLowerCase());
+          onChainLpOwners.add(chunk[j].toLowerCase());
         }
       });
     } catch { /* non-fatal; fall back to fast-path results only */ }
+    if (i + CHUNK_SIZE < toCheck.length) await sleep(DELAY_MS);
   }
 
   // Apply flags to all rows.
@@ -1536,7 +1551,7 @@ if (IS_CLI) {
     cliArgs.find((a) => a.startsWith("--top="))?.split("=")[1] ?? "20",
   );
   const depth = parseInt(
-    cliArgs.find((a) => a.startsWith("--depth="))?.split("=")[1] ?? "6",
+    cliArgs.find((a) => a.startsWith("--depth="))?.split("=")[1] ?? "3",
   );
   const jsonOut = cliArgs.includes("--json");
   const save = cliArgs.find((a) => a.startsWith("--save="))?.split("=")[1];
