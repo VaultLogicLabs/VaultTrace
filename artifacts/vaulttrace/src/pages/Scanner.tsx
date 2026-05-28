@@ -1270,18 +1270,22 @@ export default function Scanner() {
                   </div>
                   {report.creatorAudit.txCount !== null && (
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-mono text-slate-400">Lifetime Txns</span>
-                      <span className={`text-xs font-mono font-semibold ${
+                      <span className="text-xs font-mono text-slate-400">Lifetime Transactions</span>
+                      <span className={`text-xs font-mono font-semibold tabular-nums ${
                         report.creatorAudit.isFresh ? "text-red-400" : "text-green-400"
                       }`}>
-                        {report.creatorAudit.txCount}{report.creatorAudit.txCount >= 50 ? "+" : ""}
+                        {report.creatorAudit.txCount >= 50
+                          ? `${report.creatorAudit.txCount} +`
+                          : report.creatorAudit.txCount}
                       </span>
                     </div>
                   )}
                   {report.creatorAudit.isFresh && (
-                    <div className="flex items-center gap-2 bg-red-950/40 border border-red-800 rounded-lg px-3 py-2">
-                      <span>⚠️</span>
-                      <span className="text-xs font-mono text-red-400 font-semibold">Fresh Wallet — High Risk</span>
+                    <div className="flex items-center gap-2 bg-red-950/40 border border-red-800 rounded-lg px-3 py-2 mt-2">
+                      <span className="flex-shrink-0">⚠️</span>
+                      <span className="text-xs font-mono text-red-400 font-semibold tracking-wide">
+                        Fresh Wallet — High Risk
+                      </span>
                     </div>
                   )}
                 </div>
