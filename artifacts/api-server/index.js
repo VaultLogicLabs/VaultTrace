@@ -1203,7 +1203,7 @@ export async function runScan(mintAddress, options = {}) {
   const onChainLpOwners = new Set(); // lowercase addrs confirmed as DEX vaults
   if (toCheck.length) {
     try {
-      const infos = await rpc("getMultipleAccountsInfo", [
+      const infos = await rpc("getMultipleAccounts", [
         toCheck,
         { encoding: "base64" },
       ]);
