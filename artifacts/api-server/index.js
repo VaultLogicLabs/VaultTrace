@@ -1486,42 +1486,48 @@ export async function runScan(mintAddress, options = {}) {
   }
 
   // Apply flags to all rows — priority order prevents mislabelling.
-  // NULL_ADDR (System Program) is Solana's on-chain burn owner for SPL accounts.
-  // INCINERATOR is the explicit burn address some protocols use — check case-insensitively.
+  //
+  // When getTokenAcctOwner() returns null (closed / non-standard accounts),
+  // row.owner falls back to row.tokenAcct (the SPL account address itself).
+  // Every tier therefore checks BOTH fields so flags fire regardless of
+  // whether the owner-lookup succeeded or fell back.
+  //
+  // Incinerator prefix match ("1nc1nerator") is intentional: the address has
+  // length variants across protocols, and startsWith is unambiguous.
   const lpOwnerWallet = lp.lpOwnerWallet ?? null;
   const NULL_LOWER = NULL_ADDR.toLowerCase();
-  const INCINERATOR_LOWER = "1nc1nerator1111111111111111111111111111".toLowerCase();
   for (const row of holderRows) {
     const ol = row.owner.toLowerCase();
     const al = row.tokenAcct.toLowerCase();
+
     // Tier 1 — Liquidity Pool.
-    // HOLDER_DEX_OWNERS covers DEX program IDs + authority PDAs (static, O(1)).
-    // DEX_AUTHORITY_ADDRS + onChainLpOwners cover per-pool PDA vaults.
-    // lpPairLower covers the pool pair address from DexScreener.
+    // Checks owner AND tokenAcct in every sub-condition.
     row.isLP = !!(
-      DEX_AUTHORITY_ADDRS.has(row.owner) ||
-      onChainLpOwners.has(ol) ||
+      DEX_AUTHORITY_ADDRS.has(row.owner) || DEX_AUTHORITY_ADDRS.has(row.tokenAcct) ||
+      onChainLpOwners.has(ol) || onChainLpOwners.has(al) ||
       (lpPairLower && (ol === lpPairLower || al === lpPairLower))
     );
     row.isLiquidityPool = row.isLP ||
-      HOLDER_DEX_OWNERS.has(row.owner) ||
-      !!(lpPairLower && ol === lpPairLower);
+      HOLDER_DEX_OWNERS.has(row.owner) || HOLDER_DEX_OWNERS.has(row.tokenAcct);
+
     // Tier 2 — Burned / Locked.
-    // NULL_ADDR = System Program owns burned SPL token accounts on-chain.
-    // INCINERATOR = explicit burn address used by some protocols.
-    // KNOWN_LOCKER_PROGRAMS = locker contracts (Streamflow, Poseidon, etc.).
+    // NULL_ADDR = System Program (on-chain owner of burned SPL accounts).
+    // "1nc1nerator" prefix = incinerator; startsWith handles length variants.
+    // Both owner and tokenAcct checked for the fallback case.
     row.isBurnedOrLocked = (
-      ol === NULL_LOWER ||
-      ol === INCINERATOR_LOWER ||
-      KNOWN_LOCKER_PROGRAMS.has(row.owner)
+      ol === NULL_LOWER || al === NULL_LOWER ||
+      ol.startsWith("1nc1nerator") || al.startsWith("1nc1nerator") ||
+      KNOWN_LOCKER_PROGRAMS.has(row.owner) || KNOWN_LOCKER_PROGRAMS.has(row.tokenAcct)
     );
-    // Tier 3 — LP Holder: holds the unburned LP token — rug risk.
+
+    // Tier 3 — LP Holder: wallet that holds the unburned LP token (rug risk).
     row.isLpHolder = !row.isLiquidityPool && !row.isBurnedOrLocked &&
-      !!(lpOwnerWallet && row.owner === lpOwnerWallet);
+      !!(lpOwnerWallet && (row.owner === lpOwnerWallet || row.tokenAcct === lpOwnerWallet));
+
     // Tier 4 — Whale: large non-DEX, non-system wallet.
-    // Explicit !isLiquidityPool && !isBurnedOrLocked guards ensure no leakthrough.
     row.isWhale = !row.isLiquidityPool && !row.isBurnedOrLocked && !row.isLpHolder &&
-      row.pct > 5.0 && !HOLDER_DEX_OWNERS.has(row.owner);
+      row.pct > 5.0 &&
+      !HOLDER_DEX_OWNERS.has(row.owner) && !HOLDER_DEX_OWNERS.has(row.tokenAcct);
   }
 
   if (lp.status === "bonding_curve") {
