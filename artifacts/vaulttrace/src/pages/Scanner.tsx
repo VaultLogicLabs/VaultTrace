@@ -1239,7 +1239,7 @@ export default function Scanner() {
                   AUDIT CHECKLIST
                 </p>
                 <div className="space-y-0">
-                  {report.risk.signals.map((s, i) => {
+                  {(report.risk?.signals ?? []).map((s, i) => {
                     const icon = s.severity === "critical" ? "🔴" : s.severity === "high" ? "🟠" : "🟡";
                     return (
                       <div key={i} className="flex items-start gap-2 py-1.5 border-b border-slate-800/60">
