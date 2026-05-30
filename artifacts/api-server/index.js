@@ -161,6 +161,21 @@ const KNOWN_LOCKER_PROGRAMS = new Map([
   ["MGNAkHEWbBiMmb3yFjnMWVaJBSBtnHNGpGp7wZFaGhS", "Magna"],
 ]);
 
+// Maps holder-account owner addresses → DEX label.
+// When a top-holder's token account is owned by one of these programs or
+// authority PDAs, the token has an active pool on that DEX — regardless of
+// how old the migration was (signature scan windows can't reach it).
+const HOLDER_DEX_OWNERS = new Map([
+  [RAYDIUM_AMM,  "raydium"],
+  ["5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1", "raydium"],      // Raydium v4 authority
+  [RAYDIUM_CPMM, "raydium_cpmm"],
+  ["GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ", "raydium_cpmm"], // CPMM authority
+  [RAYDIUM_CLMM, "raydium_clmm"],
+  [METEORA_AMM,  "meteora"],
+  [ORCA_WHIRLPOOL,  "orca_whirlpool"],
+  [ORCA_TOKEN_SWAP, "orca"],
+]);
+
 function cacheGet(key) {
   const entry = CACHE.get(key);
   if (!entry) return undefined;
@@ -511,7 +526,22 @@ async function getMintAuthority(mint) {
   });
 }
 
-async function getLpStatus(mint, mintSigs) {
+// Raydium REST API — returns the LP mint address for the best pool matching
+// the given token mint.  Uses poolType=all to cover both AMM v4 and CPMM.
+// Returns null on any error or when no pool is indexed by Raydium.
+async function getRaydiumLpMint(mint) {
+  try {
+    const url =
+      `https://api-v3.raydium.io/pools/info/mint` +
+      `?mint1=${mint}&poolType=all&poolSortField=default&sortType=desc&pageSize=1&page=1`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    return json?.data?.data?.[0]?.lpMint?.address ?? null;
+  } catch { return null; }
+}
+
+async function getLpStatus(mint, mintSigs, holderRows = []) {
   // Caching strategy:
   //   - Pool FOUND  (burned / partially_locked / unlocked / bonding_curve /
   //     found_external) → TTL_7D. Once we've located the pool/LP mint, that
@@ -723,6 +753,79 @@ async function getLpStatus(mint, mintSigs) {
         : safePct2 >= 50        ? "partially_locked"
         :                          "unlocked";
     }
+    cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+    return result;
+  }
+
+  // ── Holder-based DEX detection ────────────────────────────────────────────
+  // For established, high-volume tokens the pool-creation tx is buried far
+  // beyond any signature scan window.  Instead, inspect the pre-computed
+  // holderRows: if any holder's token account is owned by a known DEX program
+  // or authority PDA, the token HAS an active pool on that DEX.
+  //
+  // Once we confirm a Raydium / CPMM pool, query the Raydium REST API to get
+  // the LP mint (one HTTP call, no RPC round-trips) and then run the standard
+  // burn/lock analysis on it.  For CLMM / Meteora / Orca we can confirm the
+  // pool exists but can't measure LP burn — fall through to "found_external".
+  for (const row of holderRows) {
+    const dexLabel = HOLDER_DEX_OWNERS.get(row.owner);
+    if (!dexLabel) continue;
+
+    result.poolType = dexLabel;
+    result.graduated = true;
+
+    if (LP_MINT_DETECTABLE.has(dexLabel)) {
+      const lpMintFromApi = await getRaydiumLpMint(mint);
+      if (lpMintFromApi) {
+        result.lpMint = lpMintFromApi;
+
+        await sleep(DELAY_MS);
+        const supplyData3 = await rpc("getTokenSupply", [lpMintFromApi]);
+        const lpSupply3   = parseInt(supplyData3?.value?.amount ?? "-1");
+        result.lpSupply   = lpSupply3;
+
+        if (lpSupply3 === 0) {
+          result.burned = true; result.burnedPct = 100; result.status = "burned";
+          cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+          return result;
+        }
+
+        await sleep(DELAY_MS);
+        const largest3  = await rpc("getTokenLargestAccounts", [lpMintFromApi]);
+        const holders3  = largest3?.value ?? [];
+        let burnedAmt3 = 0, lockedAmt3 = 0, lockerName3 = null;
+        for (const h of holders3.slice(0, 5)) {
+          await sleep(DELAY_MS);
+          const owner3 = await getTokenAcctOwner(h.address);
+          if (owner3 === NULL_ADDR) {
+            burnedAmt3 += parseInt(h.amount ?? "0");
+            result.lockedAddr = h.address;
+          } else if (KNOWN_LOCKER_PROGRAMS.has(owner3)) {
+            lockedAmt3 += parseInt(h.amount ?? "0");
+            lockerName3 = lockerName3 ?? KNOWN_LOCKER_PROGRAMS.get(owner3);
+            result.lockedAddr = h.address;
+          }
+        }
+        if (lpSupply3 > 0) {
+          result.burnedPct  = Math.round((burnedAmt3 / lpSupply3) * 100);
+          result.lockedPct  = Math.round((lockedAmt3 / lpSupply3) * 100);
+          result.lockerName = lockerName3;
+          result.isLocked   = result.lockedPct > 0;
+          const safePct3    = result.burnedPct + result.lockedPct;
+          result.burned     = result.burnedPct >= 99;
+          result.status     = result.burned ? "burned"
+            : result.lockedPct >= 99 ? "locked"
+            : safePct3 >= 50         ? "partially_locked"
+            :                          "unlocked";
+        }
+        cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+        return result;
+      }
+    }
+
+    // CLMM / Meteora / Orca or Raydium API miss — pool confirmed but LP burn
+    // analysis is not available.  Override poolType and surface as "found_external".
+    result.status = "found_external";
     cacheSet(`lpStatus:${mint}`, result, TTL_7D);
     return result;
   }
@@ -1309,7 +1412,7 @@ export async function runScan(mintAddress, options = {}) {
   // ── LP Status ───────────────────────────────────────────────────────────
   section("LP / LIQUIDITY POOL STATUS");
   progress("Scanning transaction history for liquidity pool");
-  const lp = await getLpStatus(mintAddress, mintSigs);
+  const lp = await getLpStatus(mintAddress, mintSigs, holderRows);
   clr();
 
   report.contractSecurity.lp = lp;
