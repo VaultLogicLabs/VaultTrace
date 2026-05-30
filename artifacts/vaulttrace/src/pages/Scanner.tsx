@@ -1164,37 +1164,47 @@ export default function Scanner() {
                         </span>
                       </div>
                     )}
-                    {((report.contractSecurity.lp.burnedPct ?? 0) > 0 ||
-                      (report.contractSecurity.lp.lockedPct ?? 0) > 0) && (
-                      <div className="border-t border-slate-800 pt-3 mt-3 space-y-2">
-                        {(report.contractSecurity.lp.burnedPct ?? 0) > 0 && (
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-mono text-slate-400">LP Burned</span>
-                            <span className={`text-xs font-mono font-semibold ${
-                              (report.contractSecurity.lp.burnedPct ?? 0) >= 99
-                                ? "text-green-400" : "text-yellow-400"
-                            }`}>
-                              {report.contractSecurity.lp.burnedPct}%
-                            </span>
-                          </div>
-                        )}
-                        {(report.contractSecurity.lp.lockedPct ?? 0) > 0 && (
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-mono text-slate-400">
-                              🔒 LP Locked
-                              {report.contractSecurity.lp.lockerName && (
-                                <span className="text-slate-500 ml-1">
-                                  ({report.contractSecurity.lp.lockerName})
-                                </span>
-                              )}
-                            </span>
-                            <span className="text-xs font-mono font-semibold text-blue-400">
-                              {report.contractSecurity.lp.lockedPct}%
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    {(() => {
+                      const lp = report.contractSecurity.lp;
+                      const burned = lp.burnedPct ?? 0;
+                      const locked = lp.lockedPct ?? 0;
+                      const hasAnalysis = ["burned","locked","partially_locked","unlocked"].includes(lp.status);
+                      const fullyUnprotected = hasAnalysis && burned === 0 && locked === 0;
+                      if (!hasAnalysis && burned === 0 && locked === 0) return null;
+                      return (
+                        <div className="border-t border-slate-800 pt-3 mt-3 space-y-2">
+                          {burned > 0 && (
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-mono text-slate-400">LP Burned</span>
+                              <span className={`text-xs font-mono font-semibold ${
+                                burned >= 99 ? "text-green-400" : "text-yellow-400"
+                              }`}>
+                                {burned}%
+                              </span>
+                            </div>
+                          )}
+                          {locked > 0 && (
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-mono text-slate-400">
+                                🔒 LP Locked
+                                {lp.lockerName && (
+                                  <span className="text-slate-500 ml-1">({lp.lockerName})</span>
+                                )}
+                              </span>
+                              <span className="text-xs font-mono font-semibold text-blue-400">
+                                {locked}%
+                              </span>
+                            </div>
+                          )}
+                          {fullyUnprotected && (
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-mono text-red-400">⚠️ LP Unlocked</span>
+                              <span className="text-xs font-mono font-bold text-red-400">0% Protected</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-mono text-slate-400">Snipers</span>
                       <span className={`text-xs font-mono font-semibold ${

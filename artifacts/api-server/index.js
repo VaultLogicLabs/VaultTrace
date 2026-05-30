@@ -646,16 +646,103 @@ async function getLpStatus(mint, mintSigs) {
     return result;
   }
 
-  // Tx-scan miss → check for Pump.fun bonding curve (token hasn't graduated).
+  // ── Migration scan ────────────────────────────────────────────────────────
+  // The oldest-50 window above may have missed the pool-creation tx for tokens
+  // that graduated from Pump.fun long after launch (many bonding-curve trades
+  // before the graduation tx exists).  Scan the most recent 25 sigs instead,
+  // applying the same balance-diff heuristic to locate the LP mint creation tx.
+  // A Raydium creation tx is the ONLY one that shows the LP mint appearing in
+  // postTokenBalances but NOT in preTokenBalances — regular trades never do this.
+  const MIGRATION_SCAN_LIMIT = 25;
+  const migrationSigs =
+    (await rpc("getSignaturesForAddress", [mint, { limit: MIGRATION_SCAN_LIMIT }])) ?? [];
+  for (const s of migrationSigs) {
+    await sleep(DELAY_MS);
+    const tx = await getTx(s.signature);
+    if (!tx) continue;
+    const maccts = getAccounts(tx);
+
+    let migDex = null;
+    for (const acc of maccts) {
+      if (AMM_PROGRAMS[acc]) { migDex = AMM_PROGRAMS[acc]; break; }
+    }
+    if (!migDex || !LP_MINT_DETECTABLE.has(migDex)) continue;
+
+    // Balance-diff: new mint in post not in pre = LP token first minted here.
+    const preBals2  = tx.meta?.preTokenBalances  ?? [];
+    const postBals2 = tx.meta?.postTokenBalances ?? [];
+    const preMints2 = new Set(preBals2.map((b) => b.mint));
+    let lpMint2 = null;
+    for (const bal of postBals2) {
+      if (bal.mint === mint || bal.mint === WSOL_MINT) continue;
+      if (!preMints2.has(bal.mint)) { lpMint2 = bal.mint; break; }
+    }
+    if (!lpMint2) continue; // Not the pool-creation tx — keep scanning
+
+    // Found the migration / pool-creation tx — run full burn/lock analysis.
+    result.poolType = migDex;
+    result.lpMint   = lpMint2;
+    result.graduated = maccts.includes(PUMPFUN_PROG);
+
+    await sleep(DELAY_MS);
+    const supplyData2 = await rpc("getTokenSupply", [lpMint2]);
+    const lpSupply2   = parseInt(supplyData2?.value?.amount ?? "-1");
+    result.lpSupply   = lpSupply2;
+
+    if (lpSupply2 === 0) {
+      result.burned = true; result.burnedPct = 100; result.status = "burned";
+      cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+      return result;
+    }
+
+    await sleep(DELAY_MS);
+    const largest2  = await rpc("getTokenLargestAccounts", [lpMint2]);
+    const holders2  = largest2?.value ?? [];
+    let burnedAmt2 = 0, lockedAmt2 = 0, lockerName2 = null;
+    for (const h of holders2.slice(0, 5)) {
+      await sleep(DELAY_MS);
+      const owner2 = await getTokenAcctOwner(h.address);
+      if (owner2 === NULL_ADDR) {
+        burnedAmt2 += parseInt(h.amount ?? "0");
+        result.lockedAddr = h.address;
+      } else if (KNOWN_LOCKER_PROGRAMS.has(owner2)) {
+        lockedAmt2 += parseInt(h.amount ?? "0");
+        lockerName2 = lockerName2 ?? KNOWN_LOCKER_PROGRAMS.get(owner2);
+        result.lockedAddr = h.address;
+      }
+    }
+    if (lpSupply2 > 0) {
+      result.burnedPct  = Math.round((burnedAmt2 / lpSupply2) * 100);
+      result.lockedPct  = Math.round((lockedAmt2 / lpSupply2) * 100);
+      result.lockerName = lockerName2;
+      result.isLocked   = result.lockedPct > 0;
+      const safePct2    = result.burnedPct + result.lockedPct;
+      result.burned     = result.burnedPct >= 99;
+      result.status     = result.burned ? "burned"
+        : result.lockedPct >= 99 ? "locked"
+        : safePct2 >= 50        ? "partially_locked"
+        :                          "unlocked";
+    }
+    cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+    return result;
+  }
+
+  // ── Bonding-curve check ───────────────────────────────────────────────────
+  // Only mark as "bonding_curve" if the tx touches PUMPFUN_PROG but does NOT
+  // touch any AMM program.  A graduation tx touches both — that case falls
+  // through to the DexScreener fallback which correctly surfaces the pool.
   const recentSigs =
     (await rpc("getSignaturesForAddress", [mint, { limit: 5 }])) ?? [];
   for (const s of recentSigs) {
     await sleep(DELAY_MS);
     const tx = await getTx(s.signature);
     if (!tx) continue;
-    if (getAccounts(tx).includes(PUMPFUN_PROG)) {
+    const bcAccts  = getAccounts(tx);
+    const hasPump  = bcAccts.includes(PUMPFUN_PROG);
+    const hasAMM   = bcAccts.some((a) => !!AMM_PROGRAMS[a]);
+    if (hasPump && !hasAMM) {
       result.poolType = "pumpfun";
-      result.status = "bonding_curve";
+      result.status   = "bonding_curve";
       cacheSet(`lpStatus:${mint}`, result, TTL_7D);
       return result;
     }
