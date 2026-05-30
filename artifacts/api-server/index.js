@@ -1486,27 +1486,40 @@ export async function runScan(mintAddress, options = {}) {
   }
 
   // Apply flags to all rows — priority order prevents mislabelling.
+  // NULL_ADDR (System Program) is Solana's on-chain burn owner for SPL accounts.
+  // INCINERATOR is the explicit burn address some protocols use — check case-insensitively.
   const lpOwnerWallet = lp.lpOwnerWallet ?? null;
-  const lpPairAddrLower = lp.pairAddress?.toLowerCase() ?? "";
-  const INCINERATOR = "1nc1nerator1111111111111111111111111111";
+  const NULL_LOWER = NULL_ADDR.toLowerCase();
+  const INCINERATOR_LOWER = "1nc1nerator1111111111111111111111111111".toLowerCase();
   for (const row of holderRows) {
     const ol = row.owner.toLowerCase();
     const al = row.tokenAcct.toLowerCase();
-    // Tier 1 — Liquidity Pool: DEX vault / on-chain program / pair address.
+    // Tier 1 — Liquidity Pool.
+    // HOLDER_DEX_OWNERS covers DEX program IDs + authority PDAs (static, O(1)).
+    // DEX_AUTHORITY_ADDRS + onChainLpOwners cover per-pool PDA vaults.
+    // lpPairLower covers the pool pair address from DexScreener.
     row.isLP = !!(
       DEX_AUTHORITY_ADDRS.has(row.owner) ||
       onChainLpOwners.has(ol) ||
       (lpPairLower && (ol === lpPairLower || al === lpPairLower))
     );
-    row.isLiquidityPool = row.isLP || !!(lpPairAddrLower && ol === lpPairAddrLower);
-    // Tier 2 — Burn / locker: incinerator or a known locker program.
+    row.isLiquidityPool = row.isLP ||
+      HOLDER_DEX_OWNERS.has(row.owner) ||
+      !!(lpPairLower && ol === lpPairLower);
+    // Tier 2 — Burned / Locked.
+    // NULL_ADDR = System Program owns burned SPL token accounts on-chain.
+    // INCINERATOR = explicit burn address used by some protocols.
+    // KNOWN_LOCKER_PROGRAMS = locker contracts (Streamflow, Poseidon, etc.).
     row.isBurnedOrLocked = (
-      row.owner === INCINERATOR || KNOWN_LOCKER_PROGRAMS.has(row.owner)
+      ol === NULL_LOWER ||
+      ol === INCINERATOR_LOWER ||
+      KNOWN_LOCKER_PROGRAMS.has(row.owner)
     );
-    // Tier 3 — LP Holder: owns the unburned LP token (rug risk).
+    // Tier 3 — LP Holder: holds the unburned LP token — rug risk.
     row.isLpHolder = !row.isLiquidityPool && !row.isBurnedOrLocked &&
       !!(lpOwnerWallet && row.owner === lpOwnerWallet);
     // Tier 4 — Whale: large non-DEX, non-system wallet.
+    // Explicit !isLiquidityPool && !isBurnedOrLocked guards ensure no leakthrough.
     row.isWhale = !row.isLiquidityPool && !row.isBurnedOrLocked && !row.isLpHolder &&
       row.pct > 5.0 && !HOLDER_DEX_OWNERS.has(row.owner);
   }
