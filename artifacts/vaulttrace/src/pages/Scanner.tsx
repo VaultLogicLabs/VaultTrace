@@ -50,6 +50,8 @@ interface HolderRow {
   tokenAcct: string;
   owner: string;
   isLP?: boolean;
+  isLiquidityPool?: boolean;
+  isBurnedOrLocked?: boolean;
   isLpHolder?: boolean;
   isWhale?: boolean;
   tokens: number;
@@ -1366,7 +1368,10 @@ export default function Scanner() {
                         <span className="text-cyan-400">⚡</span> Known entity
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="text-blue-400">💧</span> Liquidity Pool
+                        <span className="text-cyan-400">💧</span> Liquidity Pool
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="text-green-400">🔥</span> Burned/Locked
                       </span>
                       <span className="flex items-center gap-1">
                         <span className="text-red-400">🚨</span> LP Holder
@@ -1478,10 +1483,7 @@ export default function Scanner() {
                                 )}
                               </td>
                               <td className="px-4 py-2.5 text-center">
-                                <span className="flex items-center justify-center gap-0.5">
-                                  {h.isLP && (
-                                    <span title="Liquidity Pool">💧</span>
-                                  )}
+                                <span className="flex items-center justify-center gap-0.5 flex-wrap">
                                   {isSniper && (
                                     <span title="Same-block sniper">🎯</span>
                                   )}
@@ -1496,6 +1498,22 @@ export default function Scanner() {
                                   {!!h.funderLabel && (
                                     <span title={h.funderLabel ?? ""}>⚡</span>
                                   )}
+                                  {h.isLiquidityPool && (
+                                    <span
+                                      title="Liquidity pool vault"
+                                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-800 whitespace-nowrap"
+                                    >
+                                      💧 Liquidity Pool
+                                    </span>
+                                  )}
+                                  {h.isBurnedOrLocked && (
+                                    <span
+                                      title="Burned or locked tokens"
+                                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-950 text-green-400 border border-green-800 whitespace-nowrap"
+                                    >
+                                      🔥 Burned/Locked
+                                    </span>
+                                  )}
                                   {h.isLpHolder && (
                                     <span
                                       title="Holds unlocked LP tokens — can rug pool"
@@ -1504,12 +1522,12 @@ export default function Scanner() {
                                       🚨 LP Holder
                                     </span>
                                   )}
-                                  {h.isWhale && !h.isLpHolder && (
+                                  {h.isWhale && (
                                     <span
-                                      title="Whale — holds &gt;5% of top holders"
-                                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-950 text-blue-400 border border-blue-900 whitespace-nowrap"
+                                      title="Whale — holds >5% of supply"
+                                      className="inline-flex items-center px-1 py-0.5 rounded text-[11px] bg-blue-950 text-blue-400 border border-blue-900"
                                     >
-                                      🐳 Whale
+                                      🐳
                                     </span>
                                   )}
                                 </span>
