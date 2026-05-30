@@ -149,6 +149,18 @@ const TTL_24H = 86_400_000;
 const TTL_7D  = 604_800_000;
 const TTL_6H  =  21_600_000;
 
+// Known Solana LP locker programs. If the owner of an LP token account is one
+// of these programs, the liquidity is "locked" (secured, not burned to null).
+// Map: program address → display name shown in the UI.
+const KNOWN_LOCKER_PROGRAMS = new Map([
+  ["strmqDe5vC9STwYi62sM69ryC89366AnshonXfHSpvC", "Streamflow"],
+  ["strmRqUCoQUgGUan5YonZIHo7cPo7P8ePq28w3i9o3N", "Streamflow"],
+  ["vau1zxA2LbssAUEF7Gpw91zMM1LvXrvpzJtmZ58rPsn", "Metaplex Vault"],
+  ["7sPptkymzvayoSbLXzBsXEF8TSf3typNnAWkrKrDhjMb", "Unicrypt"],
+  ["DLockCRM3PxfXDFZJcMBLJjDHGHPD2b1rBEbAUBBvFw5", "PinkSale"],
+  ["MGNAkHEWbBiMmb3yFjnMWVaJBSBtnHNGpGp7wZFaGhS", "Magna"],
+]);
+
 function cacheGet(key) {
   const entry = CACHE.get(key);
   if (!entry) return undefined;
@@ -516,6 +528,9 @@ async function getLpStatus(mint, mintSigs) {
     lpSupply: null,
     burned: null,
     burnedPct: null,
+    lockedPct: null,
+    lockerName: null,
+    isLocked: false,
     lockedAddr: null,
     graduated: false,
     pairAddress: null,
@@ -589,22 +604,34 @@ async function getLpStatus(mint, mintSigs) {
       const largest = await rpc("getTokenLargestAccounts", [lpMint]);
       const holders = largest?.value ?? [];
       let burnedAmt = 0;
+      let lockedAmt = 0;
+      let lockerName = null;
       for (const h of holders.slice(0, 5)) {
         await sleep(DELAY_MS);
         const owner = await getTokenAcctOwner(h.address);
         if (owner === NULL_ADDR) {
           burnedAmt += parseInt(h.amount ?? "0");
           result.lockedAddr = h.address;
+        } else if (KNOWN_LOCKER_PROGRAMS.has(owner)) {
+          lockedAmt += parseInt(h.amount ?? "0");
+          lockerName = lockerName ?? KNOWN_LOCKER_PROGRAMS.get(owner);
+          result.lockedAddr = h.address;
         }
       }
       if (lpSupply > 0) {
         result.burnedPct = Math.round((burnedAmt / lpSupply) * 100);
+        result.lockedPct = Math.round((lockedAmt / lpSupply) * 100);
+        result.lockerName = lockerName;
+        result.isLocked = result.lockedPct > 0;
+        const safePct = result.burnedPct + result.lockedPct;
         result.burned = result.burnedPct >= 99;
         result.status = result.burned
           ? "burned"
-          : result.burnedPct >= 50
-            ? "partially_locked"
-            : "unlocked";
+          : result.lockedPct >= 99
+            ? "locked"
+            : safePct >= 50
+              ? "partially_locked"
+              : "unlocked";
       }
       cacheSet(`lpStatus:${mint}`, result, TTL_7D);
       return result;
@@ -1332,19 +1359,35 @@ export async function runScan(mintAddress, options = {}) {
           tty,
         ),
       );
-    } else if (lp.status === "partially_locked") {
+    } else if (lp.status === "locked") {
       log(
         ansi(
-          "yellow",
-          `  ⚠   LP tokens PARTIALLY LOCKED — ${lp.burnedPct}% held by null address.`,
+          "green",
+          `  🔒  LP tokens LOCKED via ${lp.lockerName ?? "known locker"} (${lp.lockedPct}%).`,
           tty,
         ),
       );
-      log(ansi("yellow", `       Locked account: ${lp.lockedAddr}`, tty));
+      log(
+        ansi(
+          "green",
+          "       Liquidity is secured — deployer cannot withdraw without the locker's release.",
+          tty,
+        ),
+      );
+    } else if (lp.status === "partially_locked") {
+      const safePct = (lp.burnedPct ?? 0) + (lp.lockedPct ?? 0);
       log(
         ansi(
           "yellow",
-          `       ${100 - lp.burnedPct}% of LP is still withdrawable by the deployer.`,
+          `  ⚠   LP tokens PARTIALLY SECURED — ${safePct}% safe (${lp.burnedPct}% burned, ${lp.lockedPct ?? 0}% locked).`,
+          tty,
+        ),
+      );
+      log(ansi("yellow", `       Secured account: ${lp.lockedAddr}`, tty));
+      log(
+        ansi(
+          "yellow",
+          `       ${100 - safePct}% of LP is still withdrawable by the deployer.`,
           tty,
         ),
       );
@@ -1391,15 +1434,16 @@ export async function runScan(mintAddress, options = {}) {
   if (lp.status === "unlocked") {
     score += 20;
     signals.push({
-      label: "LP tokens not burned — rug-pull vector",
+      label: "LP tokens not burned or locked — rug-pull vector",
       pts: 20,
       severity: "high",
     });
   } else if (lp.status === "partially_locked") {
-    const pts = Math.round((100 - lp.burnedPct) / 10);
+    const safePct = (lp.burnedPct ?? 0) + (lp.lockedPct ?? 0);
+    const pts = Math.round((100 - safePct) / 10);
     score += pts;
     signals.push({
-      label: `LP tokens partially locked (${lp.burnedPct}% locked, ${100 - lp.burnedPct}% withdrawable)`,
+      label: `LP partially secured (${safePct}% safe, ${100 - safePct}% still withdrawable)`,
       pts,
       severity: "medium",
     });

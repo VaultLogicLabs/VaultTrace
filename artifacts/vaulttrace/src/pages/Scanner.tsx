@@ -15,6 +15,9 @@ interface LpStatus {
   lpSupply: number | null;
   burned: boolean | null;
   burnedPct: number | null;
+  lockedPct: number | null;
+  lockerName: string | null;
+  isLocked: boolean;
   lockedAddr: string | null;
   graduated: boolean;
   status: string;
@@ -330,13 +333,14 @@ function riskColor(score: number): string {
 
 function LpStatusBadge({ lp }: { lp: LpStatus }) {
   const cfg: Record<string, { label: string; cls: string }> = {
-    burned:           { label: "LP Burned ✓",       cls: "text-green-400 border-green-800 bg-green-950/40" },
-    partially_locked: { label: "Partially Locked ⚠", cls: "text-yellow-400 border-yellow-800 bg-yellow-950/40" },
-    unlocked:         { label: "LP Unlocked 🚨",     cls: "text-red-400 border-red-800 bg-red-950/40" },
-    bonding_curve:    { label: "Bonding Curve",      cls: "text-cyan-400 border-cyan-800 bg-cyan-950/40" },
-    found_external:   { label: "Pool Found",         cls: "text-cyan-400 border-cyan-800 bg-cyan-950/40" },
-    not_found:        { label: "No Pool Found",      cls: "text-slate-400 border-slate-700 bg-slate-800/40" },
-    unknown:          { label: "Unknown",             cls: "text-slate-400 border-slate-700 bg-slate-800/40" },
+    burned:           { label: "LP Burned ✓",          cls: "text-green-400 border-green-800 bg-green-950/40" },
+    locked:           { label: "🔒 LP Locked ✓",        cls: "text-blue-400 border-blue-800 bg-blue-950/40" },
+    partially_locked: { label: "Partially Secured ⚠",  cls: "text-yellow-400 border-yellow-800 bg-yellow-950/40" },
+    unlocked:         { label: "LP Unlocked 🚨",        cls: "text-red-400 border-red-800 bg-red-950/40" },
+    bonding_curve:    { label: "Bonding Curve",         cls: "text-cyan-400 border-cyan-800 bg-cyan-950/40" },
+    found_external:   { label: "Pool Found",            cls: "text-cyan-400 border-cyan-800 bg-cyan-950/40" },
+    not_found:        { label: "No Pool Found",         cls: "text-slate-400 border-slate-700 bg-slate-800/40" },
+    unknown:          { label: "Unknown",               cls: "text-slate-400 border-slate-700 bg-slate-800/40" },
   };
   const c = cfg[lp.status] ?? cfg.unknown;
   return (
@@ -1160,18 +1164,35 @@ export default function Scanner() {
                         </span>
                       </div>
                     )}
-                    {report.contractSecurity.lp.burnedPct !== null && (
-                      <div className="flex items-center justify-between border-t border-slate-800 pt-3 mt-3">
-                        <span className="text-xs font-mono text-slate-400">LP Burned</span>
-                        <span className={`text-xs font-mono font-semibold ${
-                          (report.contractSecurity.lp.burnedPct ?? 0) >= 99
-                            ? "text-green-400"
-                            : (report.contractSecurity.lp.burnedPct ?? 0) >= 50
-                            ? "text-yellow-400"
-                            : "text-red-400"
-                        }`}>
-                          {report.contractSecurity.lp.burnedPct}%
-                        </span>
+                    {((report.contractSecurity.lp.burnedPct ?? 0) > 0 ||
+                      (report.contractSecurity.lp.lockedPct ?? 0) > 0) && (
+                      <div className="border-t border-slate-800 pt-3 mt-3 space-y-2">
+                        {(report.contractSecurity.lp.burnedPct ?? 0) > 0 && (
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-mono text-slate-400">LP Burned</span>
+                            <span className={`text-xs font-mono font-semibold ${
+                              (report.contractSecurity.lp.burnedPct ?? 0) >= 99
+                                ? "text-green-400" : "text-yellow-400"
+                            }`}>
+                              {report.contractSecurity.lp.burnedPct}%
+                            </span>
+                          </div>
+                        )}
+                        {(report.contractSecurity.lp.lockedPct ?? 0) > 0 && (
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-mono text-slate-400">
+                              🔒 LP Locked
+                              {report.contractSecurity.lp.lockerName && (
+                                <span className="text-slate-500 ml-1">
+                                  ({report.contractSecurity.lp.lockerName})
+                                </span>
+                              )}
+                            </span>
+                            <span className="text-xs font-mono font-semibold text-blue-400">
+                              {report.contractSecurity.lp.lockedPct}%
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
                     <div className="flex items-center justify-between">
@@ -1228,10 +1249,15 @@ export default function Scanner() {
                       <span className="text-xs font-mono text-green-400">Freeze Authority Disabled</span>
                     </div>
                   )}
-                  {report.contractSecurity.lp?.status === "burned" && (
+                  {(report.contractSecurity.lp?.status === "burned" ||
+                    report.contractSecurity.lp?.status === "locked") && (
                     <div className="flex items-center gap-2 py-1.5 border-b border-slate-800/60">
                       <span className="text-sm">✅</span>
-                      <span className="text-xs font-mono text-green-400">LP Tokens Burned</span>
+                      <span className="text-xs font-mono text-green-400">
+                        {report.contractSecurity.lp.status === "locked"
+                          ? `LP Tokens Locked${report.contractSecurity.lp.lockerName ? ` via ${report.contractSecurity.lp.lockerName}` : " (Secure Vault)"}`
+                          : "LP Tokens Burned"}
+                      </span>
                     </div>
                   )}
                   {(report.clusters?.length ?? 0) === 0 && (
