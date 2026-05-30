@@ -564,6 +564,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
     lockedAddr: null,
     graduated: false,
     pairAddress: null,
+    lpOwnerWallet: null,
     status: "unknown",
   };
 
@@ -636,9 +637,11 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
       let burnedAmt = 0;
       let lockedAmt = 0;
       let lockerName = null;
+      let firstLpOwner = null;
       for (const h of holders.slice(0, 5)) {
         await sleep(DELAY_MS);
         const owner = await getTokenAcctOwner(h.address);
+        if (firstLpOwner === null) firstLpOwner = owner;
         if (owner === NULL_ADDR) {
           burnedAmt += parseInt(h.amount ?? "0");
           result.lockedAddr = h.address;
@@ -662,6 +665,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
             : safePct >= 50
               ? "partially_locked"
               : "unlocked";
+        if (result.status === "unlocked") result.lpOwnerWallet = firstLpOwner;
       }
       cacheSet(`lpStatus:${mint}`, result, TTL_7D);
       return result;
@@ -728,10 +732,11 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
     await sleep(DELAY_MS);
     const largest2  = await rpc("getTokenLargestAccounts", [lpMint2]);
     const holders2  = largest2?.value ?? [];
-    let burnedAmt2 = 0, lockedAmt2 = 0, lockerName2 = null;
+    let burnedAmt2 = 0, lockedAmt2 = 0, lockerName2 = null, firstLpOwner2 = null;
     for (const h of holders2.slice(0, 5)) {
       await sleep(DELAY_MS);
       const owner2 = await getTokenAcctOwner(h.address);
+      if (firstLpOwner2 === null) firstLpOwner2 = owner2;
       if (owner2 === NULL_ADDR) {
         burnedAmt2 += parseInt(h.amount ?? "0");
         result.lockedAddr = h.address;
@@ -752,6 +757,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
         : result.lockedPct >= 99 ? "locked"
         : safePct2 >= 50        ? "partially_locked"
         :                          "unlocked";
+      if (result.status === "unlocked") result.lpOwnerWallet = firstLpOwner2;
     }
     cacheSet(`lpStatus:${mint}`, result, TTL_7D);
     return result;
@@ -794,9 +800,11 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
         const largest3  = await rpc("getTokenLargestAccounts", [lpMintFromApi]);
         const holders3  = largest3?.value ?? [];
         let burnedAmt3 = 0, lockedAmt3 = 0, lockerName3 = null;
+        let firstLpOwner3 = null;
         for (const h of holders3.slice(0, 5)) {
           await sleep(DELAY_MS);
           const owner3 = await getTokenAcctOwner(h.address);
+          if (firstLpOwner3 === null) firstLpOwner3 = owner3;
           if (owner3 === NULL_ADDR) {
             burnedAmt3 += parseInt(h.amount ?? "0");
             result.lockedAddr = h.address;
@@ -817,6 +825,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
             : result.lockedPct >= 99 ? "locked"
             : safePct3 >= 50         ? "partially_locked"
             :                          "unlocked";
+          if (result.status === "unlocked") result.lpOwnerWallet = firstLpOwner3;
         }
         cacheSet(`lpStatus:${mint}`, result, TTL_7D);
         return result;
@@ -1477,6 +1486,7 @@ export async function runScan(mintAddress, options = {}) {
   }
 
   // Apply flags to all rows.
+  const lpOwnerWallet = lp.lpOwnerWallet ?? null;
   for (const row of holderRows) {
     const ol = row.owner.toLowerCase();
     const al = row.tokenAcct.toLowerCase();
@@ -1485,6 +1495,11 @@ export async function runScan(mintAddress, options = {}) {
       onChainLpOwners.has(ol) ||
       (lpPairLower && (ol === lpPairLower || al === lpPairLower))
     );
+    if (lpOwnerWallet && row.owner === lpOwnerWallet) {
+      row.isLpHolder = true;
+    } else if (row.pct > 5.0 && !row.isLP && !HOLDER_DEX_OWNERS.has(row.owner)) {
+      row.isWhale = true;
+    }
   }
 
   if (lp.status === "bonding_curve") {

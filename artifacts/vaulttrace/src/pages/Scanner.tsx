@@ -50,6 +50,8 @@ interface HolderRow {
   tokenAcct: string;
   owner: string;
   isLP?: boolean;
+  isLpHolder?: boolean;
+  isWhale?: boolean;
   tokens: number;
   pct: number;
   buyTime: number | null;
@@ -1366,6 +1368,12 @@ export default function Scanner() {
                       <span className="flex items-center gap-1">
                         <span className="text-blue-400">💧</span> Liquidity Pool
                       </span>
+                      <span className="flex items-center gap-1">
+                        <span className="text-red-400">🚨</span> LP Holder
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span>🐳</span> Whale
+                      </span>
                     </div>
                   </div>
 
@@ -1487,6 +1495,22 @@ export default function Scanner() {
                                   })()}
                                   {!!h.funderLabel && (
                                     <span title={h.funderLabel ?? ""}>⚡</span>
+                                  )}
+                                  {h.isLpHolder && (
+                                    <span
+                                      title="Holds unlocked LP tokens — can rug pool"
+                                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-950 text-red-400 border border-red-800 whitespace-nowrap"
+                                    >
+                                      🚨 LP Holder
+                                    </span>
+                                  )}
+                                  {h.isWhale && !h.isLpHolder && (
+                                    <span
+                                      title="Whale — holds &gt;5% of top holders"
+                                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-950 text-blue-400 border border-blue-900 whitespace-nowrap"
+                                    >
+                                      🐳 Whale
+                                    </span>
                                   )}
                                 </span>
                               </td>
