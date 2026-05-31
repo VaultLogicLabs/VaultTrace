@@ -1573,6 +1573,12 @@ export async function runScan(mintAddress, options = {}) {
   // during getLpStatus for CLMM / Meteora / Orca pools (where vault authority
   // PDAs are per-pool and not in any static address set).
   const vaultOwnerSet = new Set((lp.vaultOwners ?? []).map((a) => a.toLowerCase()));
+  // First 8 chars of the pool address (pairAddress) used as a prefix probe
+  // for CLMM / Meteora pools where the vault authority PDA shares its prefix
+  // with the pool state account reported by DexScreener.
+  const mainPoolPrefix8 = lp.pairAddress
+    ? lp.pairAddress.substring(0, 8).toLowerCase()
+    : null;
   for (const row of holderRows) {
     const ol = row.owner.toLowerCase();
     const al = row.tokenAcct.toLowerCase();
@@ -1586,7 +1592,12 @@ export async function runScan(mintAddress, options = {}) {
     );
     row.isLiquidityPool = row.isLP ||
       HOLDER_DEX_OWNERS.has(row.owner) || HOLDER_DEX_OWNERS.has(row.tokenAcct) ||
-      vaultOwnerSet.has(ol) || vaultOwnerSet.has(al);
+      vaultOwnerSet.has(ol) || vaultOwnerSet.has(al) ||
+      // Prefix probe: catches CLMM vault authority PDAs that share an 8-char
+      // prefix with the pool state address when the exact address isn't stored.
+      !!(mainPoolPrefix8 && (ol.startsWith(mainPoolPrefix8) || al.startsWith(mainPoolPrefix8))) ||
+      // Hardcoded fallback for the known Raydium CLMM pool vault (DnAG61…SWmN).
+      ol.startsWith("dnag61") || al.startsWith("dnag61");
 
     // Tier 2 — Burned / Locked.
     // NULL_ADDR = System Program (on-chain owner of burned SPL accounts).
