@@ -565,6 +565,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
     graduated: false,
     pairAddress: null,
     lpOwnerWallet: null,
+    vaultOwners: [],   // vault token account addresses for CLMM/Meteora/Orca pools
     status: "unknown",
   };
 
@@ -674,8 +675,17 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
     // CLMM / Whirlpool / Meteora — pool exists, but burn analysis is
     // protocol-specific (NFT positions or per-position liquidity). Report
     // existence and let the UI surface it as "Pool Found".
+    // Extract the vault token accounts for our mint from this tx so the
+    // holder-flag loop can mark them as isLiquidityPool even when
+    // getTokenAcctOwner() fails (falls back to tokenAcct address).
     result.poolType = matchedDex;
     result.status = "found_external";
+    {
+      const txVaults = (tx.meta?.postTokenBalances ?? [])
+        .filter((b) => b.mint === mint && accts[b.accountIndex])
+        .map((b) => accts[b.accountIndex]);
+      if (txVaults.length) result.vaultOwners = txVaults;
+    }
     cacheSet(`lpStatus:${mint}`, result, TTL_7D);
     return result;
   }
@@ -834,7 +844,9 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
 
     // CLMM / Meteora / Orca or Raydium API miss — pool confirmed but LP burn
     // analysis is not available.  Override poolType and surface as "found_external".
+    // Record the matching holder's tokenAcct as a known vault address.
     result.status = "found_external";
+    if (row.tokenAcct) result.vaultOwners = [row.tokenAcct];
     cacheSet(`lpStatus:${mint}`, result, TTL_7D);
     return result;
   }
@@ -869,6 +881,21 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
     result.poolType = pair.dexId ?? "external";
     result.pairAddress = pair.pairAddress;
     result.status = "found_external";
+    // Try to resolve vault token accounts for our mint owned by the pool
+    // address. Works for Meteora Dynamic AMM (pool owns vaults directly).
+    // Non-fatal — CLMM pools use authority PDAs so this may return empty.
+    try {
+      await sleep(DELAY_MS);
+      const vaultResult = await rpc("getTokenAccountsByOwner", [
+        pair.pairAddress,
+        { mint },
+        { encoding: "base64" },
+      ]);
+      const vaultAddrs = (vaultResult?.value ?? [])
+        .map((v) => v.pubkey)
+        .filter(Boolean);
+      if (vaultAddrs.length) result.vaultOwners = vaultAddrs;
+    } catch { /* non-fatal */ }
     cacheSet(`lpStatus:${mint}`, result, TTL_7D);
     return result;
   }
@@ -1496,6 +1523,10 @@ export async function runScan(mintAddress, options = {}) {
   // length variants across protocols, and startsWith is unambiguous.
   const lpOwnerWallet = lp.lpOwnerWallet ?? null;
   const NULL_LOWER = NULL_ADDR.toLowerCase();
+  // vaultOwnerSet: token account addresses of known pool vaults extracted
+  // during getLpStatus for CLMM / Meteora / Orca pools (where vault authority
+  // PDAs are per-pool and not in any static address set).
+  const vaultOwnerSet = new Set((lp.vaultOwners ?? []).map((a) => a.toLowerCase()));
   for (const row of holderRows) {
     const ol = row.owner.toLowerCase();
     const al = row.tokenAcct.toLowerCase();
@@ -1508,7 +1539,8 @@ export async function runScan(mintAddress, options = {}) {
       (lpPairLower && (ol === lpPairLower || al === lpPairLower))
     );
     row.isLiquidityPool = row.isLP ||
-      HOLDER_DEX_OWNERS.has(row.owner) || HOLDER_DEX_OWNERS.has(row.tokenAcct);
+      HOLDER_DEX_OWNERS.has(row.owner) || HOLDER_DEX_OWNERS.has(row.tokenAcct) ||
+      vaultOwnerSet.has(ol) || vaultOwnerSet.has(al);
 
     // Tier 2 — Burned / Locked.
     // NULL_ADDR = System Program (on-chain owner of burned SPL accounts).
