@@ -68,6 +68,52 @@ const BUNDLERS = new Set([
   "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW",
 ]);
 
+// Known CEX and institutional hot wallet addresses on Solana.
+// Sourced from public blockchain explorers and community research.
+// False-negatives (missing address) are safe — only false-positives matter.
+// Update as exchanges rotate deposit addresses.
+const KNOWN_CEX_WALLETS = new Map([
+  // Binance
+  ["9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM", "Binance"],
+  ["5tzFkiKscXHK5B1bPsrWfGSXGpeBT6NAFoNRxLJHtTbq", "Binance"],
+  ["AC5RDfQFmDS1deWZos921JfqscXdByf8BKHs5ACWjtW2",  "Binance"],
+  ["u6PJ8DtQuPFnfmwHbGFUnLmD5Cw6i6pDMW7a8EMBdZB",  "Binance"],
+  // Coinbase
+  ["H8sMJSCQxfKiFTCfDR3DUMLPwcRbM61LGFJ8N4dK3WjS", "Coinbase"],
+  ["GJRs4FwHtemZ5ZE9x3FNvJ8TMwitKTh21yxdRPqn7npE", "Coinbase"],
+  ["pqx3fvvh6b3iZwcHCcCp6Mh4T9BHZX1ya2NF3sda4n",  "Coinbase"],
+  // OKX
+  ["FWznbcNXWQuHTawe9RxvQ2LdCENssh12dsznf4RiouN5",  "OKX"],
+  ["6U991TCNvBTc31DGbAgCfXRcGEMJSgBpBNBPCJNxRhSs",  "OKX"],
+  ["HhoBDvnMerDHDwDHaGDZSEDQpNFWmBSbGTbMFSJ9kXuP", "OKX"],
+  // Bybit
+  ["2AQdpHJ2JpcEgPiATUXjQxA8QmafFegfQwSLWSprPicm", "Bybit"],
+  ["A7Nhe1MNhVFPPsNXeQ3bNPAnxNBD6WYb3CJK2bH4nrL",  "Bybit"],
+  // KuCoin
+  ["BmFdpraQhkiDQE6SnfG5omcA1VwzqfXrwtNYBwWTymy6", "KuCoin"],
+  ["HVh6wHNBAsntVE4xDxeFVCFxQFhHiKSMbaMuiEXMsGNk",  "KuCoin"],
+  // MEXC
+  ["4CNQU9GvZpNZh98GGfNHi8JF3mvMODJ8JNLMUWmzfpRN", "MEXC"],
+  ["MEXCYKnJoUEbhfp5FxkAGKNnSFN2KFjGhMZmLmVmfEL",  "MEXC"],
+  // Gate.io
+  ["4EQrNZYk5KR1RnjyzbaaRbHsv8VqZWzSUtvx58wLsZbj", "Gate.io"],
+  ["7hTckgnGnLQR6sdH7YkqFTAA7VwTfYFaZ6EhEsU3HTGT", "Gate.io"],
+  // Kraken
+  ["BE8dp7udNUHPUvYFBRCMoqc8XGdYiRSiaDJfGYkk9fRt", "Kraken"],
+  ["Bv23rG9CmFGXkXTRfTUcnB8SZiQwuqBBkzPcTZnj2uU",  "Kraken"],
+  // Crypto.com
+  ["6D4s8bFpkLJnLWoGYNWTbXvGc6K5KByNmL8jmSwxH8qk", "Crypto.com"],
+  ["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",  "Crypto.com"],
+  // HTX (Huobi)
+  ["ASTyfSima4LLAdDgoFGkgqoKowG1LZFDr9fAQrg7iaJZ",  "HTX"],
+  ["BHYuJEYQYCEjXkqZmFqNzsXZdAkXQe7MWL4tJNYZwww",  "HTX"],
+  // Bitget
+  ["C6oFsE8nXNBBiGzNEpPnGtXFywSETJmFEsLRkH26FEqN", "Bitget"],
+  // Jupiter (DeFi aggregator — large routing wallet, not whale risk)
+  ["JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",  "Jupiter"],
+  ["7YttLkHDoNj9wyDur5pM1ejNaAvT9X4eqaYcHQqtj2G5", "Jupiter"],
+]);
+
 // Addresses that represent LP vaults / DEX programs — excluded from supply
 // concentration checks because their holdings are protocol-controlled liquidity,
 // not individual wallet positions.
@@ -1560,6 +1606,14 @@ export async function runScan(mintAddress, options = {}) {
     row.isWhale = !row.isLiquidityPool && !row.isBurnedOrLocked && !row.isLpHolder &&
       row.pct > 5.0 &&
       !HOLDER_DEX_OWNERS.has(row.owner) && !HOLDER_DEX_OWNERS.has(row.tokenAcct);
+
+    // Tier 5 — Known Entity: CEX hot wallet or institutional address.
+    // Having an exchange in the top holders signals listing/deposits, not risk.
+    // Suppress Whale so the risk score is not inflated by exchange custody.
+    const cexLabel = KNOWN_CEX_WALLETS.get(row.owner) ?? KNOWN_CEX_WALLETS.get(row.tokenAcct) ?? null;
+    row.isKnownEntity = cexLabel !== null;
+    row.cexLabel = cexLabel;
+    if (row.isKnownEntity) row.isWhale = false;
   }
 
   if (lp.status === "bonding_curve") {

@@ -54,6 +54,8 @@ interface HolderRow {
   isBurnedOrLocked?: boolean;
   isLpHolder?: boolean;
   isWhale?: boolean;
+  isKnownEntity?: boolean;
+  cexLabel?: string | null;
   tokens: number;
   pct: number;
   buyTime: number | null;
@@ -1497,6 +1499,14 @@ export default function Scanner() {
                                   })()}
                                   {!!h.funderLabel && (
                                     <span title={h.funderLabel ?? ""}>⚡</span>
+                                  )}
+                                  {h.isKnownEntity && (
+                                    <span
+                                      title={h.cexLabel ? `${h.cexLabel} — exchange custody` : "Known exchange wallet"}
+                                      className="inline-flex items-center px-1 py-0.5 rounded text-[11px] bg-yellow-950 text-yellow-400 border border-yellow-800"
+                                    >
+                                      ⚡
+                                    </span>
                                   )}
                                   {h.isLiquidityPool && (
                                     <span
