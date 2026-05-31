@@ -1500,10 +1500,10 @@ export default function Scanner() {
                                   )}
                                   {h.isLiquidityPool && (
                                     <span
-                                      title="Liquidity pool vault"
-                                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-800 whitespace-nowrap"
+                                      title="Liquidity Pool vault"
+                                      className="inline-flex items-center px-1 py-0.5 rounded text-[11px] bg-cyan-950 text-cyan-300 border border-cyan-800"
                                     >
-                                      💧 Liquidity Pool
+                                      💧
                                     </span>
                                   )}
                                   {h.isBurnedOrLocked && (
