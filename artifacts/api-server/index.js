@@ -1518,12 +1518,8 @@ export async function runScan(mintAddress, options = {}) {
   clr();
 
   report.contractSecurity.lp = lp;
-  // Patch the pool-type display label with the highest-liquidity pair's dexId.
-  // `pair` is already the top-liquidity DexScreener result (sorted in getDexScreenerPair).
-  // This overrides any early-exit sig-scan poolType (e.g. a dead Pumpswap launch
-  // curve) without touching caching, getLpStatus internals, or holder matching.
-  if (pair?.dexId) {
-    report.contractSecurity.lp = { ...lp, poolType: pair.dexId };
+  if (lp?.dexId) {
+    report.contractSecurity.lp = { ...lp, poolType: lp.dexId };
   }
 
   // Back-fill isLP flag — three-tier, case-insensitive detection:
