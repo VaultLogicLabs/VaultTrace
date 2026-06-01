@@ -718,9 +718,8 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
       return result;
     }
 
-    // CLMM / Whirlpool / Meteora — pool exists, but burn analysis is
-    // protocol-specific (NFT positions or per-position liquidity). Report
-    // existence and let the UI surface it as "Pool Found".
+    // CLMM / Whirlpool / Meteora / Pumpswap — pool exists, but burn analysis
+    // is protocol-specific.  Report existence and let the UI surface it.
     // Extract the vault token accounts for our mint from this tx so the
     // holder-flag loop can mark them as isLiquidityPool even when
     // getTokenAcctOwner() fails (falls back to tokenAcct address).
@@ -732,6 +731,18 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
         .map((b) => accts[b.accountIndex]);
       if (txVaults.length) result.vaultOwners = txVaults;
     }
+    // Always resolve the highest-liquidity pool from DexScreener — the
+    // sig-scan may have matched a low-liquidity or dead pool (e.g. a
+    // Pumpswap launch curve that co-exists with an active Raydium pool).
+    // getDexScreenerPair already sorts pairs by USD liquidity; this call
+    // is cached (TTL_7D) so it adds no latency on repeated scans.
+    try {
+      const dsPair = await getDexScreenerPair(mint);
+      if (dsPair?.pairAddress) {
+        result.pairAddress = dsPair.pairAddress;
+        if (dsPair.dexId) result.poolType = dsPair.dexId;
+      }
+    } catch { /* non-fatal */ }
     cacheSet(`lpStatus:${mint}`, result, TTL_7D);
     return result;
   }
@@ -893,6 +904,15 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
     // Record the matching holder's tokenAcct as a known vault address.
     result.status = "found_external";
     if (row.tokenAcct) result.vaultOwners = [row.tokenAcct];
+    // Resolve the highest-liquidity pool from DexScreener so pairAddress
+    // is always the active pool, not the holder-matched one (cached TTL_7D).
+    try {
+      const dsPair = await getDexScreenerPair(mint);
+      if (dsPair?.pairAddress) {
+        result.pairAddress = dsPair.pairAddress;
+        if (dsPair.dexId) result.poolType = dsPair.dexId;
+      }
+    } catch { /* non-fatal */ }
     cacheSet(`lpStatus:${mint}`, result, TTL_7D);
     return result;
   }
@@ -1595,9 +1615,7 @@ export async function runScan(mintAddress, options = {}) {
       vaultOwnerSet.has(ol) || vaultOwnerSet.has(al) ||
       // Prefix probe: catches CLMM vault authority PDAs that share an 8-char
       // prefix with the pool state address when the exact address isn't stored.
-      !!(mainPoolPrefix8 && (ol.startsWith(mainPoolPrefix8) || al.startsWith(mainPoolPrefix8))) ||
-      // Hardcoded fallback for the known Raydium CLMM pool vault (DnAG61…SWmN).
-      ol.startsWith("dnag61") || al.startsWith("dnag61");
+      !!(mainPoolPrefix8 && (ol.startsWith(mainPoolPrefix8) || al.startsWith(mainPoolPrefix8)));
 
     // Tier 2 — Burned / Locked.
     // NULL_ADDR = System Program (on-chain owner of burned SPL accounts).
