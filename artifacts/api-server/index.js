@@ -487,6 +487,29 @@ async function getOldestFunder(address) {
       if (accts[i] === address) continue;
       if ((pre[i] ?? 0) > (post[i] ?? 0)) { funder = accts[i]; break; }
     }
+    // Upgrade 2: if the SOL fee-payer is a known relayer / system wallet,
+    // trace the real funding source via WSOL or USDC token transfers.
+    // Cabals route funds through intermediary relayers to obscure ownership.
+    if (funder && (ENTITIES[funder] || BUNDLERS.has(funder))) {
+      const WSOL = "So11111111111111111111111111111111111111112";
+      const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      const preTok  = tx.meta?.preTokenBalances  ?? [];
+      const postTok = tx.meta?.postTokenBalances ?? [];
+      for (const preBal of preTok) {
+        if (preBal.mint !== WSOL && preBal.mint !== USDC) continue;
+        const postBal = postTok.find((p) => p.accountIndex === preBal.accountIndex);
+        const preAmt  = preBal.uiTokenAmount?.uiAmount  ?? 0;
+        const postAmt = postBal?.uiTokenAmount?.uiAmount ?? 0;
+        if (preAmt > postAmt) {
+          const senderAcct = accts[preBal.accountIndex];
+          if (senderAcct && senderAcct !== address) {
+            const realFunder = await getTokenAcctOwner(senderAcct).catch(() => null);
+            if (realFunder && realFunder !== address) funder = realFunder;
+          }
+          break;
+        }
+      }
+    }
     return { birthTime: sigs[0].blockTime, funder };
   });
 }
@@ -962,6 +985,79 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
         .filter(Boolean);
       if (vaultAddrs.length) result.vaultOwners = vaultAddrs;
     } catch { /* non-fatal */ }
+
+    // Upgrade 4: Deep LP history scan — for tokens whose creation tx fell
+    // outside the sig-scan horizon (high-volume or older pools), scan the
+    // LP pool account's own oldest transaction to recover LP mint + burn/lock
+    // status that the horizon-capped sig scan could not reach.
+    if (LP_MINT_DETECTABLE.has(pair.dexId ?? "")) {
+      try {
+        await sleep(DELAY_MS);
+        const poolSigs = await rpc("getSignaturesForAddress", [
+          pair.pairAddress,
+          { limit: 10 },
+        ]);
+        const creationSig = poolSigs?.[poolSigs.length - 1];
+        if (creationSig) {
+          await sleep(DELAY_MS);
+          const poolTx = await getTx(creationSig.signature);
+          if (poolTx) {
+            const preBals  = poolTx.meta?.preTokenBalances  ?? [];
+            const postBals = poolTx.meta?.postTokenBalances ?? [];
+            const preMints = new Set(preBals.map((b) => b.mint));
+            let lpMint = null;
+            for (const bal of postBals) {
+              if (bal.mint === mint || bal.mint === WSOL_MINT) continue;
+              if (!preMints.has(bal.mint)) { lpMint = bal.mint; break; }
+            }
+            if (!lpMint) {
+              for (const bal of postBals) {
+                if (bal.mint !== mint && bal.mint !== WSOL_MINT) { lpMint = bal.mint; break; }
+              }
+            }
+            if (lpMint) {
+              result.lpMint = lpMint;
+              await sleep(DELAY_MS);
+              const supplyData = await rpc("getTokenSupply", [lpMint]);
+              const lpSupply = parseInt(supplyData?.value?.amount ?? "-1");
+              result.lpSupply = lpSupply;
+              if (lpSupply === 0) {
+                result.burned = true;
+                result.burnedPct = 100;
+                result.status = "burned";
+              } else if (lpSupply > 0) {
+                await sleep(DELAY_MS);
+                const largest = await rpc("getTokenLargestAccounts", [lpMint]);
+                const lpHolders = largest?.value ?? [];
+                let burnedAmt = 0; let lockedAmt = 0; let lockerName = null;
+                for (const h of lpHolders.slice(0, 5)) {
+                  await sleep(DELAY_MS);
+                  const lpOwner = await getTokenAcctOwner(h.address);
+                  if (lpOwner === NULL_ADDR) {
+                    burnedAmt += parseInt(h.amount ?? "0");
+                  } else if (KNOWN_LOCKER_PROGRAMS.has(lpOwner)) {
+                    lockedAmt += parseInt(h.amount ?? "0");
+                    lockerName = lockerName ?? KNOWN_LOCKER_PROGRAMS.get(lpOwner);
+                    result.lockedAddr = h.address;
+                  }
+                }
+                result.burnedPct = Math.round((burnedAmt / lpSupply) * 100);
+                result.lockedPct = Math.round((lockedAmt / lpSupply) * 100);
+                result.lockerName = lockerName;
+                result.isLocked   = result.lockedPct > 0;
+                const safePct     = result.burnedPct + result.lockedPct;
+                result.burned     = result.burnedPct >= 99;
+                result.status     = result.burned        ? "burned"
+                  : result.lockedPct >= 99              ? "locked"
+                  : safePct >= 50                       ? "partially_locked"
+                  : "unlocked";
+              }
+            }
+          }
+        }
+      } catch { /* non-fatal — surface whatever partial data we have */ }
+    }
+
     cacheSet(`lpStatus:${mint}`, result, TTL_7D);
     return result;
   }
@@ -1224,26 +1320,48 @@ export async function runScan(mintAddress, options = {}) {
   const holderRows = [];
   const funderMap = {};
 
+  // ── Upgrade 1: Parallelized holder analysis ───────────────────────────────
+  // Phase A — Batch all token-account owner lookups in ONE getMultipleAccounts
+  // call instead of N sequential getAccountInfo calls (20 calls → 1 call).
+  emit({ type: "holder", rank: 1, total: topHolders.length, address: "…" });
+  progress(`Batch-fetching ${topHolders.length} holder owners…`);
+  const batchOwners = new Array(topHolders.length).fill(null);
+  try {
+    const batchInfo = await rpc("getMultipleAccounts", [
+      topHolders.map((h) => h.address),
+      { encoding: "jsonParsed" },
+    ]);
+    (batchInfo?.value ?? []).forEach((info, i) => {
+      batchOwners[i] = info?.data?.parsed?.info?.owner ?? null;
+    });
+  } catch { /* non-fatal — per-holder fallback in Phase B */ }
+
+  // Phase B — Fetch acquisition time + funder for ALL holders simultaneously.
+  // getFirstAcquisition and getOldestFunder are TTL_24H cached; fresh scans
+  // run concurrently via Promise.all, collapsing N×sleep(DELAY_MS) → 0.
+  progress(`Fetching ${topHolders.length} holder histories in parallel…`);
+  const holderResults = await Promise.all(
+    topHolders.map(async (h, i) => {
+      const owner = batchOwners[i] ??
+        await getTokenAcctOwner(h.address).catch(() => null);
+      const [acq, funderResult] = await Promise.all([
+        getFirstAcquisition(h.address),
+        getOldestFunder(owner ?? h.address),
+      ]);
+      return { owner, acq, funderResult };
+    }),
+  );
+
+  // Phase C — Assemble rows in rank order (synchronous, preserves ordering).
   for (let i = 0; i < topHolders.length; i++) {
     const { address, amount } = topHolders[i];
     const tokens = parseInt(amount) / 1e6;
     const pct = ((tokens / (totalInTop / 1e6)) * 100).toFixed(1);
-
-    emit({ type: "holder", rank: i + 1, total: topHolders.length, address: short(address) });
-    progress(`Holder ${i + 1}/${topHolders.length}: ${short(address)}`);
-
-    const [owner, acq] = await Promise.all([
-      getTokenAcctOwner(address),
-      getFirstAcquisition(address),
-    ]);
-
+    const { owner, acq, funderResult } = holderResults[i];
     const buyTime = acq?.blockTime ?? null;
     if (buyTime && launchTime && buyTime < launchTime) launchTime = buyTime;
-
-    const { funder, birthTime: ownerBirth } = await getOldestFunder(
-      owner ?? address,
-    );
-
+    const { funder = null, birthTime: ownerBirth = null } = funderResult ?? {};
+    emit({ type: "holder", rank: i + 1, total: topHolders.length, address: short(address) });
     const row = {
       rank: i + 1,
       tokenAcct: address,
@@ -1260,7 +1378,6 @@ export async function runScan(mintAddress, options = {}) {
       if (!funderMap[funder]) funderMap[funder] = [];
       funderMap[funder].push(row);
     }
-    await sleep(DELAY_MS);
   }
 
   clr();
@@ -1472,15 +1589,49 @@ export async function runScan(mintAddress, options = {}) {
       launchTime && r.buyTime - launchTime > 2 && r.buyTime - launchTime <= 60,
   );
 
+  // Upgrade 3: Filter MEV/Jito bots from confirmed snipers.
+  // Early buyers routing through known Jito tip accounts, or consuming
+  // >200k CUs (on-chain MEV arb profile), are automated bots — not
+  // malicious dev snipers. Tag them separately and exclude from risk score.
+  const JITO_TIP_ACCOUNTS = new Set([
+    "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+    "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
+    "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+    "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt13ib8T3s",
+    "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
+    "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
+    "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyfgGtiPhcmKZ",
+    "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
+  ]);
+  const mevBotRanks = new Set();
   if (snipers.length > 0) {
+    await Promise.all(
+      snipers.map(async (r) => {
+        try {
+          const acqData = await getFirstAcquisition(r.tokenAcct);
+          if (!acqData?.sig) return;
+          const mevTx = await getTx(acqData.sig);
+          if (!mevTx) return;
+          const txAccts = getAccounts(mevTx);
+          const hasTip = txAccts.some((a) => JITO_TIP_ACCOUNTS.has(a));
+          const computeUnits = mevTx.meta?.computeUnitsConsumed ?? 0;
+          if (hasTip || computeUnits > 200_000) mevBotRanks.add(r.rank);
+        } catch { /* non-fatal */ }
+      }),
+    );
+  }
+  const confirmedSnipers = snipers.filter((r) => !mevBotRanks.has(r.rank));
+  const mevBots          = snipers.filter((r) =>  mevBotRanks.has(r.rank));
+
+  if (confirmedSnipers.length > 0) {
     log(
       ansi(
         "red",
-        `  🚨  ${snipers.length} same-block sniper(s) detected:`,
+        `  🚨  ${confirmedSnipers.length} same-block sniper(s) detected:`,
         tty,
       ),
     );
-    snipers.forEach((r) => {
+    confirmedSnipers.forEach((r) => {
       log(
         ansi("red", `     #${String(r.rank).padStart(2)}  ${r.tokenAcct}`, tty),
       );
@@ -1490,9 +1641,18 @@ export async function runScan(mintAddress, options = {}) {
         `          Funder: ${r.funder ?? "unknown"}  ${r.funderLabel ? `[${r.funderLabel}]` : ""}`,
       );
     });
-    report.snipers = snipers.map((r) => r.rank);
+    report.snipers = confirmedSnipers.map((r) => r.rank);
   } else {
     log(ansi("green", "  ✅  No same-block snipers detected.", tty));
+  }
+  if (mevBots.length > 0) {
+    log(
+      ansi("cyan", `  🤖  ${mevBots.length} MEV/Jito bot(s) filtered from snipers (low risk):`, tty),
+    );
+    mevBots.forEach((r) =>
+      log(ansi("cyan", `     #${String(r.rank).padStart(2)}  ${r.tokenAcct}`, tty)),
+    );
+    report.mevBots = mevBots.map((r) => r.rank);
   }
 
   if (fastBuyers.length > 0) {
@@ -1831,11 +1991,11 @@ export async function runScan(mintAddress, options = {}) {
       severity: "high",
     });
   }
-  if (snipers.length > 0) {
-    const pts = Math.min(20, snipers.length * 8);
+  if (confirmedSnipers.length > 0) {
+    const pts = Math.min(20, confirmedSnipers.length * 8);
     score += pts;
     signals.push({
-      label: `Same-block snipers (${snipers.length})`,
+      label: `Same-block snipers (${confirmedSnipers.length})`,
       pts,
       severity: "high",
     });
@@ -1950,7 +2110,7 @@ export async function runScan(mintAddress, options = {}) {
     log(ansi("green", "    ✅  LP tokens burned", tty));
   if (clusters.length === 0)
     log(ansi("green", "    ✅  No funding clusters", tty));
-  if (snipers.length === 0)
+  if (confirmedSnipers.length === 0)
     log(ansi("green", "    ✅  No same-block snipers", tty));
   if (syncGroups.length === 0)
     log(ansi("green", "    ✅  No synchronized buys", tty));

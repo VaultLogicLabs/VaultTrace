@@ -1,0 +1,21 @@
+Please upgrade `index.js` to implement an institutional-grade forensic optimization suite. We need to maximize scan speed and uncover advanced dev obfuscation strategies. Execute these four targeted upgrades cleanly:
+
+1. SPEED: Parallelize Holder Analysis
+- Locate the loop over `topHolders` inside `runScan` (around line 720) that fetches account owners, acquisitions, and funders one by one.
+- Batch the owner lookups using `getMultipleAccounts` (similar to how it's handled in the LP block) to fetch all 20 owners in a single RPC call.
+- Use `Promise.all` to parallelize the execution of `getFirstAcquisition` and `getOldestFunder` for the holders instead of running them sequentially with linear `sleep(DELAY_MS)` delays. This should compress holder scan times significantly.
+
+2. FORENSICS: Catch SPL-Token Funded Cabals
+- Upgrade the `getOldestFunder` function. Currently, it only checks SOL balance differences (`preBalances` vs `postBalances`).
+- Add logic to scan `preTokenBalances` and `postTokenBalances` in that genesis transaction. If the SOL fee payer is a known relayer or system wallet, trace the source of the first token transfer (e.g., WSOL, USDC) to identify the true funding wallet hidden underneath.
+
+3. ACCURACY: Filter MEV Bots from Dev Snipers
+- Refine the sniper detection logic in Section 7. 
+- For wallets buying within the first few blocks, fetch their buy transaction and inspect it for Jito Tip instructions or a standard MEV arbitrage profile (high compute units consumed + high tip).
+- If an early buyer is a Jito/MEV bot, tag them as "🤖 MEV Bot" with a low risk weight, rather than treating them as a malicious "Dev Sniper", preventing false positives from inflating the token's risk score.
+
+4. RESILIENCE: Deep LP History Scan
+- In `getLpStatus`, if the signature scan hits the `LP_SCAN_MAX` horizon without finding the on-chain creation block, don't drop down to a blind fallback.
+- Use the pair address resolved from the DexScreener fallback to actively look up the deployment history of the LP pool itself, ensuring we can extract the true burn or lock status even for older, high-volume tokens.
+
+Apply these changes surgically, verify all variables stay in scope, and ensure the server restarts cleanly.
