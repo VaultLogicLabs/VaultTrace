@@ -1518,9 +1518,16 @@ export async function runScan(mintAddress, options = {}) {
   clr();
 
   report.contractSecurity.lp = lp;
-  if (lp?.dexId) {
-    report.contractSecurity.lp = { ...lp, poolType: lp.dexId };
-  }
+  // Override poolType with the highest-liquidity DEX name from DexScreener.
+  // Fixes cached lp objects whose poolType is a stale early-return sig-scan match
+  // (e.g. "pumpswap" launch curve) even when the active pool is Raydium/Meteora.
+  // getDexScreenerPair sorts by USD liquidity and is TTL_7D cached — no extra RPC.
+  try {
+    const bestPair = await getDexScreenerPair(mintAddress);
+    if (bestPair?.dexId) {
+      report.contractSecurity.lp = { ...lp, poolType: bestPair.dexId };
+    }
+  } catch { /* non-fatal */ }
 
   // Back-fill isLP flag — three-tier, case-insensitive detection:
   //
