@@ -1540,6 +1540,10 @@ export default function Scanner() {
                                   >
                                     {h.funderLabel ?? shortAddr(h.funder)}
                                   </a>
+                                ) : h.cexLabel ? (
+                                  <span className="text-cyan-300 font-mono text-xs" title="Known institution">
+                                    {h.cexLabel}
+                                  </span>
                                 ) : (
                                   "—"
                                 )}
