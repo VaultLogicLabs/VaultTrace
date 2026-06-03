@@ -21,6 +21,8 @@ interface LpStatus {
   lockedAddr: string | null;
   graduated: boolean;
   status: string;
+  liquidityUsd?: number | null;
+  lockedLiquidityUsd?: number | null;
 }
 
 interface ContractSecurity {
@@ -1170,6 +1172,33 @@ export default function Scanner() {
                         </span>
                       </div>
                     )}
+                    {(() => {
+                      const lp = report.contractSecurity.lp;
+                      const safePct = (lp.burnedPct ?? 0) + (lp.lockedPct ?? 0);
+                      if (lp.lockedLiquidityUsd) {
+                        return (
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-mono text-slate-400">Locked Liquidity</span>
+                            <span className="text-xs font-mono font-semibold text-green-400">
+                              ${lp.lockedLiquidityUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                              <span className="text-slate-500 font-normal ml-1">({safePct}% secured)</span>
+                            </span>
+                          </div>
+                        );
+                      }
+                      if (lp.liquidityUsd) {
+                        return (
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-mono text-slate-400">Total Liquidity</span>
+                            <span className="text-xs font-mono text-slate-300">
+                              ${lp.liquidityUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                              <span className="text-slate-500 font-normal ml-1">(lock unknown)</span>
+                            </span>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
                     {(() => {
                       const lp = report.contractSecurity.lp;
                       const burned = lp.burnedPct ?? 0;
