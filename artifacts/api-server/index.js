@@ -226,7 +226,7 @@ function cacheGet(key) {
   const entry = CACHE.get(key);
   if (!entry) return undefined;
   if (Date.now() > entry.expiresAt) { CACHE.delete(key); return undefined; }
-  return entry.value;
+ return typeof entry.value === 'object' && entry.value !== null ? structuredClone(entry.value) : entry.value;
 }
 
 function cacheSet(key, value, ttl = TTL_24H) {
@@ -1684,8 +1684,15 @@ export async function runScan(mintAddress, options = {}) {
   // getDexScreenerPair sorts by USD liquidity and is TTL_7D cached — no extra RPC.
   try {
     const bestPair = await getDexScreenerPair(mintAddress);
-    if (bestPair?.dexId) {
-      report.contractSecurity.lp = { ...lp, poolType: bestPair.dexId };
+    if (bestPair) {
+      if (bestPair.dexId) lp.poolType = bestPair.dexId;
+      if (bestPair.liquidityUsd) {
+        lp.liquidityUsd = bestPair.liquidityUsd;
+        const safePct = (lp.burnedPct ?? 0) + (lp.lockedPct ?? 0);
+        if (safePct > 0) {
+          lp.lockedLiquidityUsd = bestPair.liquidityUsd * (safePct / 100);
+        }
+      }
     }
   } catch { /* non-fatal */ }
 
@@ -1846,6 +1853,12 @@ export async function runScan(mintAddress, options = {}) {
       `  Pool type     : ${lp.poolType ?? "external"}${lp.pairAddress ? " (via DexScreener)" : ""}`,
     );
     if (lp.pairAddress) log(`  Pair address  : ${lp.pairAddress}`);
+    if (lp.lockedLiquidityUsd) {
+      const safePct = (lp.burnedPct ?? 0) + (lp.lockedPct ?? 0);
+      log(`  Locked Liquidity: ${ansi("green", "$" + fmtN(lp.lockedLiquidityUsd), tty)} (${safePct}% secured)`);
+    } else if (lp.liquidityUsd) {
+      log(`  Total Liquidity : $${fmtN(lp.liquidityUsd)} (Lock status unknown or 0%)`);
+    }
     log(
       ansi(
         "yellow",
@@ -1868,6 +1881,12 @@ export async function runScan(mintAddress, options = {}) {
     log(
       `  LP supply     : ${lp.lpSupply !== null ? fmtN(lp.lpSupply) : "unknown"}`,
     );
+    if (lp.lockedLiquidityUsd) {
+      const safePct = (lp.burnedPct ?? 0) + (lp.lockedPct ?? 0);
+      log(`  Locked Liquidity: ${ansi("green", "$" + fmtN(lp.lockedLiquidityUsd), tty)} (${safePct}% secured)`);
+    } else if (lp.liquidityUsd) {
+      log(`  Total Liquidity : $${fmtN(lp.liquidityUsd)} (Lock status unknown or 0%)`);
+    }
     log();
     if (lp.status === "burned") {
       log(
