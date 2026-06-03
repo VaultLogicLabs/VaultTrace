@@ -1175,12 +1175,23 @@ export default function Scanner() {
                     {(() => {
                       const lp = report.contractSecurity.lp;
                       const safePct = (lp.burnedPct ?? 0) + (lp.lockedPct ?? 0);
-                      if (lp.lockedLiquidityUsd) {
+                      // Prefer backend-computed lockedLiquidityUsd; fall back to
+                      // deriving it client-side from liquidityUsd × safePct so that
+                      // the "Locked Liquidity" row always appears when we have both
+                      // the pool size and burn/lock percentage — regardless of whether
+                      // the backend field made it through the cache/reference chain.
+                      const lockedUsd: number | null =
+                        lp.lockedLiquidityUsd != null
+                          ? lp.lockedLiquidityUsd
+                          : lp.liquidityUsd && safePct > 0
+                            ? lp.liquidityUsd * (safePct / 100)
+                            : null;
+                      if (lockedUsd) {
                         return (
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-mono text-slate-400">Locked Liquidity</span>
                             <span className="text-xs font-mono font-semibold text-green-400">
-                              ${lp.lockedLiquidityUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                              ${lockedUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}
                               <span className="text-slate-500 font-normal ml-1">({safePct}% secured)</span>
                             </span>
                           </div>
