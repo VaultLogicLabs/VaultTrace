@@ -1118,31 +1118,57 @@ async function getDeployerHistory(creatorAddress, currentMint) {
       .filter(([mint]) => mint !== currentMint) // exclude the token currently being scanned
       .slice(0, 15);
 
+    // Pump.fun name/symbol fallback — called when DexScreener returns no pairs
+    // or the pair has no baseToken metadata (common for dead/rugged tokens).
+    async function fetchPumpFunMeta(mint) {
+      try {
+        const r = await fetch(
+          `https://frontend-api.pump.fun/coins/${mint}`,
+          { signal: AbortSignal.timeout(6_000) },
+        );
+        if (!r.ok) return { name: null, symbol: null };
+        const j = await r.json();
+        return {
+          name:   j?.name   ?? null,
+          symbol: j?.symbol ?? null,
+        };
+      } catch { return { name: null, symbol: null }; }
+    }
+
     await Promise.all(
       candidates.map(async ([mint, launchTs]) => {
         try {
           const res = await fetch(
             `https://api.dexscreener.com/latest/dex/tokens/${mint}`,
           );
-          if (!res.ok) {
-            results.push({ mint, name: null, symbol: null, launchTs, liquidityUsd: 0, marketCap: null, status: "rugged", priceChange24h: null });
-            return;
-          }
-          const json = await res.json();
-          const pairs = (json.pairs ?? []).filter((p) => p.chainId === "solana");
+          const json = res.ok ? await res.json() : null;
+          const pairs = (json?.pairs ?? []).filter((p) => p.chainId === "solana");
+
           if (!pairs.length) {
-            results.push({ mint, name: null, symbol: null, launchTs, liquidityUsd: 0, marketCap: null, status: "rugged", priceChange24h: null });
+            // No DEX pairs — token is dead/rugged; try Pump.fun for the name.
+            const meta = await fetchPumpFunMeta(mint);
+            results.push({ mint, ...meta, launchTs, liquidityUsd: 0, marketCap: 0, status: "rugged", priceChange24h: null });
             return;
           }
+
           const best = [...pairs].sort(
             (a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0),
           )[0];
-          const liquidityUsd  = best.liquidity?.usd ?? 0;
-          const marketCap     = best.fdv ?? null;
-          const name          = best.baseToken?.name ?? null;
-          const symbol        = best.baseToken?.symbol ?? null;
-          const priceChange24h = best.priceChange?.h24 ?? null;
-          const status        = liquidityUsd < 1_000 ? "rugged" : "active";
+          const liquidityUsd   = best.liquidity?.usd ?? 0;
+          const marketCap      = best.fdv ?? 0;            // 0 instead of null for dead pools
+          let   name           = best.baseToken?.name   ?? null;
+          let   symbol         = best.baseToken?.symbol ?? null;
+          const priceChange24h = best.priceChange?.h24  ?? null;
+          const status         = liquidityUsd < 1_000 ? "rugged" : "active";
+
+          // DexScreener sometimes omits baseToken metadata for very old/dead pairs.
+          // Fall back to Pump.fun which stores the original name even after death.
+          if (!name) {
+            const meta = await fetchPumpFunMeta(mint);
+            name   = meta.name;
+            symbol = meta.symbol;
+          }
+
           results.push({ mint, name, symbol, launchTs, liquidityUsd, marketCap, status, priceChange24h });
         } catch { /* non-fatal */ }
       }),
