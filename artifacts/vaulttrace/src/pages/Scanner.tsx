@@ -1180,11 +1180,15 @@ export default function Scanner() {
                       // the "Locked Liquidity" row always appears when we have both
                       // the pool size and burn/lock percentage — regardless of whether
                       // the backend field made it through the cache/reference chain.
+                      // PumpSwap pools are natively secured by the bonding curve —
+                      // treat as 100% locked if the backend hasn't already set it.
+                      const isPumpSwap = lp.poolType === "pumpswap";
+                      const effectivePct = isPumpSwap ? 100 : safePct;
                       const lockedUsd: number | null =
                         lp.lockedLiquidityUsd != null
                           ? lp.lockedLiquidityUsd
-                          : lp.liquidityUsd && safePct > 0
-                            ? lp.liquidityUsd * (safePct / 100)
+                          : lp.liquidityUsd && effectivePct > 0
+                            ? lp.liquidityUsd * (effectivePct / 100)
                             : null;
                       if (lockedUsd) {
                         return (

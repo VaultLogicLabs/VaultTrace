@@ -1688,9 +1688,16 @@ export async function runScan(mintAddress, options = {}) {
       if (bestPair.dexId) lp.poolType = bestPair.dexId;
       if (bestPair.liquidityUsd) {
         lp.liquidityUsd = bestPair.liquidityUsd;
-        const safePct = (lp.burnedPct ?? 0) + (lp.lockedPct ?? 0);
-        if (safePct > 0) {
-          lp.lockedLiquidityUsd = bestPair.liquidityUsd * (safePct / 100);
+        // PumpSwap liquidity is natively locked by the Pump.fun bonding curve
+        // contract — there is no separate LP token to burn or lock.
+        if (lp.poolType === "pumpswap") {
+          lp.burnedPct = 100;
+          lp.lockedLiquidityUsd = bestPair.liquidityUsd;
+        } else {
+          const safePct = (lp.burnedPct ?? 0) + (lp.lockedPct ?? 0);
+          if (safePct > 0) {
+            lp.lockedLiquidityUsd = bestPair.liquidityUsd * (safePct / 100);
+          }
         }
       }
     }
