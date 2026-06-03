@@ -1067,6 +1067,92 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
   return result;
 }
 
+// ── Serial Rugger Tracker ─────────────────────────────────────────────────
+// Scans a deployer wallet's transaction history to detect other token launches.
+// Detection heuristic: any tx where the creator is fee payer AND a mint
+// appears in postTokenBalances that was absent from preTokenBalances with a
+// raw amount > 1 000 000 units — this is the fingerprint of a "create + mint"
+// transaction. Each discovered mint is then enriched via DexScreener.
+// Cached TTL_24H — deployer history is stable on that horizon.
+async function getDeployerHistory(creatorAddress, currentMint) {
+  return getCached(`deployerHistory:${creatorAddress}`, TTL_24H, async () => {
+    const foundMints = new Map(); // mint → blockTime (seconds)
+
+    try {
+      const sigs =
+        (await rpc("getSignaturesForAddress", [creatorAddress, { limit: 100 }])) ?? [];
+
+      // Fetch txs in parallel batches of 8 to bound latency
+      for (let i = 0; i < sigs.length; i += 8) {
+        const batch = sigs.slice(i, i + 8);
+        await Promise.all(
+          batch.map(async (s) => {
+            try {
+              const tx = await getTx(s.signature);
+              if (!tx) return;
+              const accts = getAccounts(tx);
+              if (accts[0] !== creatorAddress) return; // creator must be fee payer
+
+              const preMints = new Set(
+                (tx.meta?.preTokenBalances ?? []).map((b) => b.mint),
+              );
+              for (const b of tx.meta?.postTokenBalances ?? []) {
+                const rawAmt = parseFloat(b.uiTokenAmount?.amount ?? "0");
+                // A mint absent from preTokenBalances with a large supply injection
+                // strongly indicates a freshly created token in this transaction.
+                if (!preMints.has(b.mint) && rawAmt > 1_000_000) {
+                  if (!foundMints.has(b.mint)) {
+                    foundMints.set(b.mint, s.blockTime ?? null);
+                  }
+                }
+              }
+            } catch { /* non-fatal */ }
+          }),
+        );
+      }
+    } catch { /* non-fatal */ }
+
+    // Enrich each discovered mint with DexScreener data (name, MC, liquidity)
+    const results = [];
+    const candidates = [...foundMints.entries()]
+      .filter(([mint]) => mint !== currentMint) // exclude the token currently being scanned
+      .slice(0, 15);
+
+    await Promise.all(
+      candidates.map(async ([mint, launchTs]) => {
+        try {
+          const res = await fetch(
+            `https://api.dexscreener.com/latest/dex/tokens/${mint}`,
+          );
+          if (!res.ok) {
+            results.push({ mint, name: null, symbol: null, launchTs, liquidityUsd: 0, marketCap: null, status: "rugged", priceChange24h: null });
+            return;
+          }
+          const json = await res.json();
+          const pairs = (json.pairs ?? []).filter((p) => p.chainId === "solana");
+          if (!pairs.length) {
+            results.push({ mint, name: null, symbol: null, launchTs, liquidityUsd: 0, marketCap: null, status: "rugged", priceChange24h: null });
+            return;
+          }
+          const best = [...pairs].sort(
+            (a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0),
+          )[0];
+          const liquidityUsd  = best.liquidity?.usd ?? 0;
+          const marketCap     = best.fdv ?? null;
+          const name          = best.baseToken?.name ?? null;
+          const symbol        = best.baseToken?.symbol ?? null;
+          const priceChange24h = best.priceChange?.h24 ?? null;
+          const status        = liquidityUsd < 1_000 ? "rugged" : "active";
+          results.push({ mint, name, symbol, launchTs, liquidityUsd, marketCap, status, priceChange24h });
+        } catch { /* non-fatal */ }
+      }),
+    );
+
+    results.sort((a, b) => (b.launchTs ?? 0) - (a.launchTs ?? 0));
+    return results;
+  });
+}
+
 // ── Core scan function (exported) ──────────────────────────────────────────
 export async function runScan(mintAddress, options = {}) {
   const {
@@ -1306,6 +1392,19 @@ export async function runScan(mintAddress, options = {}) {
     } catch { /* non-fatal */ }
   }
   report.creatorAudit = { address: creatorWallet, txCount: creatorTxCount, isFresh: creatorIsFresh };
+
+  // ── 3c. Serial Rugger Audit ──────────────────────────────────────────────
+  // Discover other tokens this deployer has launched and classify their fate.
+  report.deployerHistory = [];
+  if (creatorWallet) {
+    try {
+      report.deployerHistory = await getDeployerHistory(creatorWallet, mintAddress);
+      const rugCount = report.deployerHistory.filter((t) => t.status === "rugged").length;
+      if (report.deployerHistory.length > 0) {
+        log(`  Deployer history : ${report.deployerHistory.length} other token(s) found — ${rugCount} rugged`);
+      }
+    } catch { /* non-fatal */ }
+  }
 
   // ── 4. Holder Analysis ──────────────────────────────────────────────────
   section("4 / 7  —  HOLDER ANALYSIS (funding + timing)");

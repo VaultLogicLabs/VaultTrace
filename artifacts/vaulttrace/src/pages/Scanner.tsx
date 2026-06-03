@@ -107,6 +107,17 @@ interface CreatorAudit {
   isFresh: boolean;
 }
 
+interface DeployerToken {
+  mint: string;
+  name: string | null;
+  symbol: string | null;
+  launchTs: number | null;
+  liquidityUsd: number;
+  marketCap: number | null;
+  status: "rugged" | "active";
+  priceChange24h: number | null;
+}
+
 interface ScanReport {
   mint: string;
   timestamp: string;
@@ -118,6 +129,7 @@ interface ScanReport {
   snipers: number[];
   risk: Risk;
   creatorAudit?: CreatorAudit;
+  deployerHistory?: DeployerToken[];
   scanDurationSeconds?: number;
 }
 
@@ -1391,6 +1403,131 @@ export default function Scanner() {
                 </div>
               </div>
             )}
+
+            {/* Deployer History — Serial Rugger Audit */}
+            {(report.deployerHistory?.length ?? 0) > 0 && (() => {
+              const history = report.deployerHistory!;
+              const rugCount = history.filter((t) => t.status === "rugged").length;
+              const isSerialRugger = rugCount >= 2;
+
+              function fmtTs(ts: number | null) {
+                if (!ts) return "—";
+                return new Date(ts * 1000).toLocaleDateString("en-US", {
+                  month: "short", day: "numeric", year: "numeric",
+                });
+              }
+              function fmtUsd(n: number | null) {
+                if (n == null) return "—";
+                if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+                if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
+                return `$${n.toFixed(0)}`;
+              }
+
+              return (
+                <div className="rounded-xl border border-slate-800 bg-card shadow-lg overflow-hidden">
+                  <div className="px-5 pt-5 pb-4">
+                    <p className="text-xs font-mono font-semibold text-muted-foreground tracking-widest mb-3">
+                      ⚠️ DEPLOYER HISTORY (SERIAL RUGGER AUDIT)
+                    </p>
+
+                    {isSerialRugger && (
+                      <div className="flex items-center gap-2 bg-red-950/50 border border-red-700 rounded-lg px-3 py-2.5 mb-4">
+                        <span className="text-lg flex-shrink-0">🚨</span>
+                        <span className="text-xs font-mono font-semibold text-red-300 tracking-wide">
+                          HIGH RISK: Serial Deployer Detected — {rugCount} of {history.length} prior token{history.length !== 1 ? "s" : ""} rugged
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="text-xs font-mono text-slate-500 mb-2">
+                      {history.length} other token{history.length !== 1 ? "s" : ""} launched by this deployer
+                      {rugCount > 0 && <span className="text-red-400 ml-2">· {rugCount} rugged</span>}
+                      {history.length - rugCount > 0 && <span className="text-green-400 ml-2">· {history.length - rugCount} active</span>}
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs font-mono">
+                      <thead>
+                        <tr className="border-y border-slate-800 bg-slate-900/60 text-slate-500 text-left">
+                          <th className="px-4 py-2.5">Token</th>
+                          <th className="px-4 py-2.5">Mint</th>
+                          <th className="px-4 py-2.5">Launch</th>
+                          <th className="px-4 py-2.5 text-right">Liquidity</th>
+                          <th className="px-4 py-2.5 text-right">Market Cap</th>
+                          <th className="px-4 py-2.5 text-center">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {history.map((t) => (
+                          <tr
+                            key={t.mint}
+                            className={`border-b border-slate-800/60 transition-colors ${
+                              t.status === "rugged"
+                                ? "bg-red-950/15 hover:bg-red-950/25"
+                                : "hover:bg-slate-800/30"
+                            }`}
+                          >
+                            <td className="px-4 py-2.5 text-slate-200 whitespace-nowrap">
+                              {t.name ? (
+                                <>
+                                  <span className="font-semibold">{t.name}</span>
+                                  {t.symbol && (
+                                    <span className="text-slate-500 ml-1.5">{t.symbol}</span>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="text-slate-500 italic">Unknown</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <a
+                                href={`https://solscan.io/token/${t.mint}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-slate-400 hover:text-cyan-400 transition-colors"
+                              >
+                                {t.mint.slice(0, 6)}…{t.mint.slice(-4)}
+                              </a>
+                            </td>
+                            <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap">
+                              {fmtTs(t.launchTs)}
+                            </td>
+                            <td className="px-4 py-2.5 text-right text-slate-300 whitespace-nowrap">
+                              {fmtUsd(t.liquidityUsd)}
+                            </td>
+                            <td className="px-4 py-2.5 text-right text-slate-300 whitespace-nowrap">
+                              {fmtUsd(t.marketCap)}
+                            </td>
+                            <td className="px-4 py-2.5 text-center whitespace-nowrap">
+                              {t.status === "rugged" ? (
+                                <span className="inline-flex items-center gap-1 bg-red-900/40 border border-red-700/60 text-red-300 rounded px-2 py-0.5">
+                                  🔴 Rugged
+                                  {t.priceChange24h != null && (
+                                    <span className="text-red-500 font-normal">
+                                      {t.priceChange24h > 0 ? "+" : ""}{t.priceChange24h.toFixed(0)}%
+                                    </span>
+                                  )}
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 bg-green-900/30 border border-green-700/50 text-green-300 rounded px-2 py-0.5">
+                                  🟢 Active
+                                  {t.priceChange24h != null && (
+                                    <span className={t.priceChange24h >= 0 ? "text-green-400" : "text-red-400"}>
+                                      {t.priceChange24h > 0 ? "+" : ""}{t.priceChange24h.toFixed(0)}%
+                                    </span>
+                                  )}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Bundled Supply Warning Banner */}
             {(report.clusters?.length ?? 0) > 0 && (() => {
