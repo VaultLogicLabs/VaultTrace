@@ -927,11 +927,25 @@ export default function Scanner() {
 
   const clusterRanks = report?.clusters?.flatMap((c) => c.rows) ?? [];
   const CLUSTER_EMOJIS = ["🟣", "🔵", "🟠", "🟤", "🩷", "🟡"];
+  // Row highlight classes — bg, left-border, hover — parallel to CLUSTER_EMOJIS order.
+  const CLUSTER_ROW_COLORS = [
+    "bg-purple-950/25 border-l-purple-500 hover:bg-purple-950/45",  // 🟣 A
+    "bg-blue-950/25   border-l-blue-500   hover:bg-blue-950/45",    // 🔵 B
+    "bg-orange-950/25 border-l-orange-500 hover:bg-orange-950/45",  // 🟠 C
+    "bg-amber-950/25  border-l-amber-700  hover:bg-amber-950/45",   // 🟤 D
+    "bg-pink-950/25   border-l-pink-500   hover:bg-pink-950/45",    // 🩷 E
+    "bg-yellow-950/25 border-l-yellow-500 hover:bg-yellow-950/45",  // 🟡 F
+  ];
   const clusterBadgeMap = new Map<number, { label: string; emoji: string }>();
+  const clusterColorMap = new Map<number, string>();
   (report?.clusters ?? []).forEach((c, idx) => {
     const emoji = CLUSTER_EMOJIS[idx % CLUSTER_EMOJIS.length];
     const letter = String.fromCharCode(65 + idx);
-    c.rows.forEach((rank) => clusterBadgeMap.set(rank, { label: `Cluster ${letter}`, emoji }));
+    const rowColor = CLUSTER_ROW_COLORS[idx % CLUSTER_ROW_COLORS.length];
+    c.rows.forEach((rank) => {
+      clusterBadgeMap.set(rank, { label: `Cluster ${letter}`, emoji });
+      clusterColorMap.set(rank, rowColor);
+    });
   });
 
   return (
@@ -1450,6 +1464,8 @@ export default function Scanner() {
                           const isFunderHighlighted =
                             !!hoveredParentWallet && h.funder === hoveredParentWallet;
 
+                          const clusterRowColor = clusterColorMap.get(h.rank)
+                            ?? "bg-yellow-950/20 border-l-yellow-500 hover:bg-yellow-950/40";
                           const rowCls = [
                             "border-b border-slate-800/60 transition-colors duration-150 cursor-default",
                             isFunderHighlighted
@@ -1457,7 +1473,7 @@ export default function Scanner() {
                               : isSniper
                               ? "bg-red-950/30 border-l-2 border-l-red-500 hover:bg-red-950/50"
                               : isCluster
-                              ? "bg-yellow-950/20 border-l-2 border-l-yellow-500 hover:bg-yellow-950/40"
+                              ? `border-l-2 ${clusterRowColor}`
                               : "border-l-2 border-l-transparent hover:bg-slate-800/40",
                           ].join(" ");
 
