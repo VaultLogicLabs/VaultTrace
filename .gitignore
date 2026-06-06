@@ -47,3 +47,11 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Environment / secrets — never commit API keys
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
