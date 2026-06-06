@@ -726,40 +726,52 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
 // t(key, { n: topN }) replaces {n} automatically.
 const UI_I18N: Record<string, Record<string, string>> = {
   en: {
-    riskScore:      "RISK SCORE",
-    contractSec:    "CONTRACT SECURITY",
-    liquidityPool:  "LIQUIDITY POOL",
-    auditChecklist: "AUDIT CHECKLIST",
-    creatorAudit:   "CREATOR AUDIT",
-    deployerHist:   "⚠️ DEPLOYER HISTORY (SERIAL RUGGER AUDIT)",
-    topHolders:     "Top {n} Holders",
-    mintAuth:       "Mint Authority",
-    freezeAuth:     "Freeze Authority",
-    lockedLiq:      "Locked Liquidity",
-    totalLiq:       "Total Liquidity",
-    snipers:        "Snipers",
-    clusters:       "Clusters",
-    noCluster:      "No Funding Clusters Detected",
-    noSniper:       "No Same-Block Snipers",
-    fundedBy:       "Funded By",
+    // Always-visible (confirm language switch without needing a scan)
+    mintLabel:       "MINT ADDRESS",
+    mintPlaceholder: "Enter Solana token mint address…",
+    scanBtn:         "SCAN",
+    scanningBtn:     "SCANNING…",
+    langToggle:      "🇪🇸 ES",
+    // Result card headings
+    riskScore:       "RISK SCORE",
+    contractSec:     "CONTRACT SECURITY",
+    liquidityPool:   "LIQUIDITY POOL",
+    auditChecklist:  "AUDIT CHECKLIST",
+    creatorAudit:    "CREATOR AUDIT",
+    deployerHist:    "⚠️ DEPLOYER HISTORY (SERIAL RUGGER AUDIT)",
+    topHolders:      "Top {n} Holders",
+    mintAuth:        "Mint Authority",
+    freezeAuth:      "Freeze Authority",
+    lockedLiq:       "Locked Liquidity",
+    totalLiq:        "Total Liquidity",
+    snipers:         "Snipers",
+    clusters:        "Clusters",
+    noCluster:       "No Funding Clusters Detected",
+    noSniper:        "No Same-Block Snipers",
+    fundedBy:        "Funded By",
   },
   es: {
-    riskScore:      "PUNTUACIÓN DE RIESGO",
-    contractSec:    "SEGURIDAD DEL CONTRATO",
-    liquidityPool:  "POOL DE LIQUIDEZ",
-    auditChecklist: "LISTA DE AUDITORÍA",
-    creatorAudit:   "AUDITORÍA DEL CREADOR",
-    deployerHist:   "⚠️ HISTORIAL DEL DEPLOYER (AUDIT DE RUGGERS)",
-    topHolders:     "{n} Principales Tenedores",
-    mintAuth:       "Autoridad de Emisión",
-    freezeAuth:     "Autoridad de Congelación",
-    lockedLiq:      "Liquidez Bloqueada",
-    totalLiq:       "Liquidez Total",
-    snipers:        "Snipers",
-    clusters:       "Grupos",
-    noCluster:      "Sin Grupos de Financiamiento",
-    noSniper:       "Sin Snipers en el Mismo Bloque",
-    fundedBy:       "Financiado Por",
+    mintLabel:       "DIRECCIÓN MINT",
+    mintPlaceholder: "Ingresa la dirección mint del token de Solana…",
+    scanBtn:         "ESCANEAR",
+    scanningBtn:     "ESCANEANDO…",
+    langToggle:      "🇺🇸 EN",
+    riskScore:       "PUNTUACIÓN DE RIESGO",
+    contractSec:     "SEGURIDAD DEL CONTRATO",
+    liquidityPool:   "POOL DE LIQUIDEZ",
+    auditChecklist:  "LISTA DE AUDITORÍA",
+    creatorAudit:    "AUDITORÍA DEL CREADOR",
+    deployerHist:    "⚠️ HISTORIAL DEL DEPLOYER (AUDIT DE RUGGERS)",
+    topHolders:      "{n} Principales Tenedores",
+    mintAuth:        "Autoridad de Emisión",
+    freezeAuth:      "Autoridad de Congelación",
+    lockedLiq:       "Liquidez Bloqueada",
+    totalLiq:        "Liquidez Total",
+    snipers:         "Snipers",
+    clusters:        "Grupos",
+    noCluster:       "Sin Grupos de Financiamiento",
+    noSniper:        "Sin Snipers en el Mismo Bloque",
+    fundedBy:        "Financiado Por",
   },
 };
 
@@ -1040,7 +1052,7 @@ export default function Scanner() {
         {/* ── Search ─────────────────────────────────────────────────── */}
         <div className="rounded-xl border border-slate-800 bg-card p-6 shadow-lg">
           <label className="block text-xs font-mono font-semibold text-muted-foreground tracking-widest mb-3">
-            MINT ADDRESS
+            {t("mintLabel")}
           </label>
           <div className="flex gap-3">
             <input
@@ -1049,7 +1061,7 @@ export default function Scanner() {
               onChange={(e) => setMint(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={status === "scanning"}
-              placeholder="Enter Solana token mint address…"
+              placeholder={t("mintPlaceholder")}
               className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-3
                          text-sm font-mono text-slate-100 placeholder:text-slate-400
                          focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30
@@ -1064,16 +1076,16 @@ export default function Scanner() {
                          transition-colors shadow-lg shadow-cyan-500/20
                          tracking-wide"
             >
-              {status === "scanning" ? "SCANNING…" : "SCAN"}
+              {status === "scanning" ? t("scanningBtn") : t("scanBtn")}
             </button>
             <button
               onClick={() => setLang((l) => (l === "en" ? "es" : "en"))}
               title={lang === "en" ? "Switch to Spanish" : "Cambiar a inglés"}
-              className="px-3 py-3 rounded-lg text-sm border border-slate-700
+              className="px-4 py-3 rounded-lg text-xs font-mono font-semibold border border-slate-700
                          bg-slate-900 hover:bg-slate-800 transition-colors
-                         text-slate-300 hover:text-white"
+                         text-slate-300 hover:text-white whitespace-nowrap"
             >
-              {lang === "en" ? "🇪🇸" : "🇺🇸"}
+              {t("langToggle")}
             </button>
           </div>
           {errorMsg && (
