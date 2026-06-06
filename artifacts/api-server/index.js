@@ -22,13 +22,31 @@ const EARLY_WIN = 300;
 // is missing, so untranslated strings always appear rather than being blank.
 const I18N = {
   en: {
-    risk:     "RISK SCORE",
+    // Section headings — keys must match section() call-site strings exactly
+    "1 / 7  —  CONTRACT SECURITY":                    "1 / 7  —  CONTRACT SECURITY",
+    "2 / 7  —  TOP HOLDERS":                          "2 / 7  —  TOP HOLDERS",
+    "3 / 7  —  TOKEN LAUNCH TIME":                    "3 / 7  —  TOKEN LAUNCH TIME",
+    "4 / 7  —  HOLDER ANALYSIS (funding + timing)":   "4 / 7  —  HOLDER ANALYSIS (funding + timing)",
+    "5 / 7  —  CLUSTER DETECTION":                    "5 / 7  —  CLUSTER DETECTION",
+    "6 / 7  —  TIMING ANALYSIS":                      "6 / 7  —  TIMING ANALYSIS",
+    "7 / 7  —  SNIPER DETECTION":                     "7 / 7  —  SNIPER DETECTION",
+    "LP / LIQUIDITY POOL STATUS":                     "LP / LIQUIDITY POOL STATUS",
+    "RISK SCORE":                                     "RISK SCORE",
+    // Inline labels
     critical: "CRITICAL",
     clean:    "Clean signals:",
     detect:   "Detected",
   },
   es: {
-    risk:     "PUNTUACIÓN DE RIESGO",
+    "1 / 7  —  CONTRACT SECURITY":                    "1 / 7  —  SEGURIDAD DEL CONTRATO",
+    "2 / 7  —  TOP HOLDERS":                          "2 / 7  —  PRINCIPALES TENEDORES",
+    "3 / 7  —  TOKEN LAUNCH TIME":                    "3 / 7  —  HORA DE LANZAMIENTO",
+    "4 / 7  —  HOLDER ANALYSIS (funding + timing)":   "4 / 7  —  ANÁLISIS DE TENEDORES (fondos + tiempo)",
+    "5 / 7  —  CLUSTER DETECTION":                    "5 / 7  —  DETECCIÓN DE GRUPOS",
+    "6 / 7  —  TIMING ANALYSIS":                      "6 / 7  —  ANÁLISIS DE TEMPORIZACIÓN",
+    "7 / 7  —  SNIPER DETECTION":                     "7 / 7  —  DETECCIÓN DE SNIPERS",
+    "LP / LIQUIDITY POOL STATUS":                     "LP / ESTADO DE LIQUIDEZ",
+    "RISK SCORE":                                     "PUNTUACIÓN DE RIESGO",
     critical: "CRÍTICO",
     clean:    "Señales positivas:",
     detect:   "Detectado",
