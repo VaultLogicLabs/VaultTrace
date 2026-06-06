@@ -16,6 +16,25 @@ const DELAY_MS = 220;
 const SYNC_WIN = 30;
 const EARLY_WIN = 300;
 
+// ── I18N ────────────────────────────────────────────────────────────────────
+// Keys are section/label identifiers; values are the display strings.
+// section() and any label helper fall back to the raw key when a translation
+// is missing, so untranslated strings always appear rather than being blank.
+const I18N = {
+  en: {
+    risk:     "RISK SCORE",
+    critical: "CRITICAL",
+    clean:    "Clean signals:",
+    detect:   "Detected",
+  },
+  es: {
+    risk:     "PUNTUACIÓN DE RIESGO",
+    critical: "CRÍTICO",
+    clean:    "Señales positivas:",
+    detect:   "Detectado",
+  },
+};
+
 const RAYDIUM_AMM      = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"; // Raydium AMM v4
 const RAYDIUM_CPMM     = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"; // Raydium CPMM
 const RAYDIUM_CLMM     = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK"; // Raydium CLMM
@@ -1240,7 +1259,8 @@ export async function runScan(mintAddress, options = {}) {
     lines.push(s);
     if (tty) process.stdout.write(s + "\n");
   }
-  function section(title) {
+  function section(titleKey, lang = "en") {
+    const title = (I18N[lang] ?? I18N.en)[titleKey] ?? titleKey;
     log();
     log(ansi("cyan", "─".repeat(65), tty));
     log(ansi("cyan", `  ${title}`, tty));
