@@ -567,6 +567,7 @@ interface RecentScansPanelProps {
   history: ScanReport[];
   onSelect: (r: ScanReport) => void;
   onClear: () => void;
+  lang: string;
 }
 
 type RiskFilter = "all" | "low" | "medium" | "high";
@@ -577,7 +578,8 @@ function riskBucket(score: number): "low" | "medium" | "high" {
   return "low";
 }
 
-function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps) {
+function RecentScansPanel({ history, onSelect, onClear, lang }: RecentScansPanelProps) {
+  const tp = (key: string) => UI_I18N[lang]?.[key] ?? UI_I18N["en"][key] ?? key;
   const [open, setOpen] = useState(true);
   const [query, setQuery] = useState("");
   const [riskFilter, setRiskFilter] = useState<RiskFilter>("all");
@@ -619,7 +621,7 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
         className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-800/30 transition-colors"
       >
         <span className="text-xs font-mono font-semibold text-muted-foreground tracking-widest">
-          RECENT SCANS
+          {tp("recentScans")}
           <span className="ml-2 text-slate-400">
             {filtered.length === history.length
               ? `(${history.length})`
@@ -642,23 +644,23 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search by name, symbol, or mint…"
+              placeholder={tp("searchPlaceholder")}
               className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2
                          text-xs font-mono text-slate-100 placeholder:text-slate-500
                          focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30
                          transition-colors"
             />
             <div className="flex items-center gap-1.5 flex-wrap">
-              {filterBtn("all", "ALL", "border-cyan-600 text-cyan-300 bg-cyan-950/40")}
-              {filterBtn("low", "LOW", "border-green-800 text-green-300 bg-green-950/40")}
-              {filterBtn("medium", "MED", "border-yellow-800 text-yellow-300 bg-yellow-950/40")}
-              {filterBtn("high", "HIGH", "border-red-800 text-red-300 bg-red-950/40")}
+              {filterBtn("all", tp("filterAll"), "border-cyan-600 text-cyan-300 bg-cyan-950/40")}
+              {filterBtn("low", tp("filterLow"), "border-green-800 text-green-300 bg-green-950/40")}
+              {filterBtn("medium", tp("filterMed"), "border-yellow-800 text-yellow-300 bg-yellow-950/40")}
+              {filterBtn("high", tp("filterHigh"), "border-red-800 text-red-300 bg-red-950/40")}
             </div>
           </div>
 
           {filtered.length === 0 ? (
             <p className="px-6 py-6 text-xs font-mono text-slate-500 text-center">
-              No scans match your filters.
+              {tp("noScansMatch")}
             </p>
           ) : (
           <ul className="divide-y divide-slate-800/60 max-h-[28rem] overflow-y-auto">
@@ -712,7 +714,7 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
               onClick={onClear}
               className="text-xs font-mono text-slate-400 hover:text-red-400 transition-colors"
             >
-              Clear history
+              {tp("clearHistory")}
             </button>
           </div>
         </div>
@@ -726,52 +728,202 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
 // t(key, { n: topN }) replaces {n} automatically.
 const UI_I18N: Record<string, Record<string, string>> = {
   en: {
-    // Always-visible (confirm language switch without needing a scan)
-    mintLabel:       "MINT ADDRESS",
-    mintPlaceholder: "Enter Solana token mint address…",
-    scanBtn:         "SCAN",
-    scanningBtn:     "SCANNING…",
-    langToggle:      "🇪🇸 ES",
-    // Result card headings
-    riskScore:       "RISK SCORE",
-    contractSec:     "CONTRACT SECURITY",
-    liquidityPool:   "LIQUIDITY POOL",
-    auditChecklist:  "AUDIT CHECKLIST",
-    creatorAudit:    "CREATOR AUDIT",
-    deployerHist:    "⚠️ DEPLOYER HISTORY (SERIAL RUGGER AUDIT)",
-    topHolders:      "Top {n} Holders",
-    mintAuth:        "Mint Authority",
-    freezeAuth:      "Freeze Authority",
-    lockedLiq:       "Locked Liquidity",
-    totalLiq:        "Total Liquidity",
-    snipers:         "Snipers",
-    clusters:        "Clusters",
-    noCluster:       "No Funding Clusters Detected",
-    noSniper:        "No Same-Block Snipers",
-    fundedBy:        "Funded By",
+    // ── Always-visible ──────────────────────────────────────────────────────
+    mintLabel:          "MINT ADDRESS",
+    mintPlaceholder:    "Enter Solana token mint address…",
+    scanBtn:            "SCAN",
+    scanningBtn:        "SCANNING…",
+    langToggle:         "🇪🇸 ES",
+    scanHint:           "Top {n} holders · Chain depth {depth} · ~60–90s cold scan",
+    idlePlaceholder:    "Enter a Solana mint address above to run a forensic scan.",
+    idleDesc:           "Checks mint/freeze authority · LP burn status · holder clusters · sniper wallets · funding chains",
+    // ── Card headings ───────────────────────────────────────────────────────
+    riskScore:          "RISK SCORE",
+    contractSec:        "CONTRACT SECURITY",
+    liquidityPool:      "LIQUIDITY POOL",
+    auditChecklist:     "AUDIT CHECKLIST",
+    creatorAudit:       "CREATOR AUDIT",
+    deployerHist:       "⚠️ DEPLOYER HISTORY (SERIAL RUGGER AUDIT)",
+    topHolders:         "Top {n} Holders",
+    // ── Contract Security rows ──────────────────────────────────────────────
+    launch:             "Launch:",
+    mintAuth:           "Mint Authority",
+    notRevoked:         "NOT REVOKED 🚨",
+    revoked:            "Revoked ✓",
+    freezeAuth:         "Freeze Authority",
+    notRevokedWarn:     "NOT REVOKED ⚠",
+    decimals:           "Decimals",
+    totalSupply:        "Total Supply",
+    // ── LP card ─────────────────────────────────────────────────────────────
+    lpStatus:           "Status",
+    pool:               "Pool",
+    lockedLiq:          "Locked Liquidity",
+    secured:            "{pct}% secured",
+    totalLiq:           "Total Liquidity",
+    lockUnknown:        "lock unknown",
+    lpBurned:           "LP Burned",
+    lpLocked:           "🔒 LP Locked",
+    lpUnlocked:         "⚠️ LP Unlocked",
+    zeroProtected:      "0% Protected",
+    snipers:            "Snipers",
+    detected:           "{n} detected",
+    clusters:           "Clusters",
+    found:              "{n} found",
+    noLpData:           "No LP data",
+    // ── Audit checklist ─────────────────────────────────────────────────────
+    mintAuthRevoked:    "Mint Authority Revoked",
+    freezeAuthDisabled: "Freeze Authority Disabled",
+    lpTokensLocked:     "LP Tokens Locked",
+    lpTokensBurned:     "LP Tokens Burned",
+    noCluster:          "No Funding Clusters Detected",
+    noSniper:           "No Same-Block Snipers",
+    // ── Creator audit ───────────────────────────────────────────────────────
+    creatorWallet:      "Creator Wallet",
+    lifetimeTx:         "Lifetime Transactions",
+    freshWallet:        "Fresh Wallet — High Risk",
+    // ── Deployer history ────────────────────────────────────────────────────
+    serialDeployer:     "HIGH RISK: Serial Deployer — {rug} of {total} prior tokens rugged",
+    launchedBy:         "{n} other tokens by this deployer",
+    ruggedCount:        "· {n} rugged",
+    activeCount:        "· {n} active",
+    unknown:            "Unknown",
+    colToken:           "Token",
+    colMint:            "Mint",
+    colLaunch:          "Launch",
+    colLiquidity:       "Liquidity",
+    colMarketCap:       "Market Cap",
+    colStatus:          "Status",
+    ruggedBadge:        "🔴 Rugged",
+    activeBadge:        "🟢 Active",
+    // ── Warning banners ─────────────────────────────────────────────────────
+    clusterWarning:     "WARNING: Coordinated Bundles Control {pct}% of Supply across {wallets} wallets",
+    highInteraction:    "High Interaction: {n} cluster{s} with coordinated post-launch activity",
+    mevWarning:         "MEV/Jito bots in {n} funding cluster{s} — possible developer-aligned bot partners",
+    events:             "events",
+    // ── Holders table ───────────────────────────────────────────────────────
+    legendSniper:       "Sniper",
+    legendCluster:      "Cluster",
+    legendKnown:        "Known entity",
+    legendLp:           "Liquidity Pool",
+    legendBurned:       "Burned/Locked",
+    legendLpHolder:     "LP Holder",
+    legendWhale:        "Whale",
+    colTokenAcct:       "Token Account",
+    colOwner:           "Owner",
+    colTokens:          "Tokens",
+    colFirstBuy:        "First Buy",
+    fundedBy:           "Funded By",
+    colFlags:           "Flags",
+    burnedLocked:       "🔥 Burned/Locked",
+    lpHolderBadge:      "🚨 LP Holder",
+    // ── Footer ──────────────────────────────────────────────────────────────
+    scannedAt:          "Scanned at",
+    poweredBy:          "Powered by Helius",
+    // ── Header ──────────────────────────────────────────────────────────────
+    headerSubtitle:     "SOLANA TOKEN FORENSIC SCANNER",
+    live:               "LIVE",
+    // ── Recent scans panel ───────────────────────────────────────────────────
+    recentScans:        "RECENT SCANS",
+    searchPlaceholder:  "Search by name, symbol, or mint…",
+    noScansMatch:       "No scans match your filters.",
+    clearHistory:       "Clear history",
+    filterAll:          "ALL",
+    filterLow:          "LOW",
+    filterMed:          "MED",
+    filterHigh:         "HIGH",
   },
   es: {
-    mintLabel:       "DIRECCIÓN MINT",
-    mintPlaceholder: "Ingresa la dirección mint del token de Solana…",
-    scanBtn:         "ESCANEAR",
-    scanningBtn:     "ESCANEANDO…",
-    langToggle:      "🇺🇸 EN",
-    riskScore:       "PUNTUACIÓN DE RIESGO",
-    contractSec:     "SEGURIDAD DEL CONTRATO",
-    liquidityPool:   "POOL DE LIQUIDEZ",
-    auditChecklist:  "LISTA DE AUDITORÍA",
-    creatorAudit:    "AUDITORÍA DEL CREADOR",
-    deployerHist:    "⚠️ HISTORIAL DEL DEPLOYER (AUDIT DE RUGGERS)",
-    topHolders:      "{n} Principales Tenedores",
-    mintAuth:        "Autoridad de Emisión",
-    freezeAuth:      "Autoridad de Congelación",
-    lockedLiq:       "Liquidez Bloqueada",
-    totalLiq:        "Liquidez Total",
-    snipers:         "Snipers",
-    clusters:        "Grupos",
-    noCluster:       "Sin Grupos de Financiamiento",
-    noSniper:        "Sin Snipers en el Mismo Bloque",
-    fundedBy:        "Financiado Por",
+    mintLabel:          "DIRECCIÓN MINT",
+    mintPlaceholder:    "Ingresa la dirección mint del token de Solana…",
+    scanBtn:            "ESCANEAR",
+    scanningBtn:        "ESCANEANDO…",
+    langToggle:         "🇺🇸 EN",
+    scanHint:           "Top {n} tenedores · Profundidad {depth} · ~60–90s escaneo frío",
+    idlePlaceholder:    "Ingresa una dirección mint de Solana para ejecutar un escaneo forense.",
+    idleDesc:           "Verifica autoridad mint/freeze · quema LP · grupos de tenedores · billeteras sniper · cadenas de financiamiento",
+    riskScore:          "PUNTUACIÓN DE RIESGO",
+    contractSec:        "SEGURIDAD DEL CONTRATO",
+    liquidityPool:      "POOL DE LIQUIDEZ",
+    auditChecklist:     "LISTA DE AUDITORÍA",
+    creatorAudit:       "AUDITORÍA DEL CREADOR",
+    deployerHist:       "⚠️ HISTORIAL DEL DEPLOYER (AUDIT DE RUGGERS)",
+    topHolders:         "{n} Principales Tenedores",
+    launch:             "Lanzamiento:",
+    mintAuth:           "Autoridad de Emisión",
+    notRevoked:         "NO REVOCADO 🚨",
+    revoked:            "Revocado ✓",
+    freezeAuth:         "Autoridad de Congelación",
+    notRevokedWarn:     "NO REVOCADO ⚠",
+    decimals:           "Decimales",
+    totalSupply:        "Suministro Total",
+    lpStatus:           "Estado",
+    pool:               "Pool",
+    lockedLiq:          "Liquidez Bloqueada",
+    secured:            "{pct}% asegurado",
+    totalLiq:           "Liquidez Total",
+    lockUnknown:        "bloqueo desconocido",
+    lpBurned:           "LP Quemado",
+    lpLocked:           "🔒 LP Bloqueado",
+    lpUnlocked:         "⚠️ LP Desbloqueado",
+    zeroProtected:      "0% Protegido",
+    snipers:            "Snipers",
+    detected:           "{n} detectados",
+    clusters:           "Grupos",
+    found:              "{n} encontrados",
+    noLpData:           "Sin datos de LP",
+    mintAuthRevoked:    "Autoridad de Emisión Revocada",
+    freezeAuthDisabled: "Autoridad de Congelación Deshabilitada",
+    lpTokensLocked:     "Tokens LP Bloqueados",
+    lpTokensBurned:     "Tokens LP Quemados",
+    noCluster:          "Sin Grupos de Financiamiento Detectados",
+    noSniper:           "Sin Snipers en el Mismo Bloque",
+    creatorWallet:      "Billetera del Creador",
+    lifetimeTx:         "Transacciones de por Vida",
+    freshWallet:        "Billetera Nueva — Alto Riesgo",
+    serialDeployer:     "ALTO RIESGO: Deployer Serial — {rug} de {total} tokens previos fueron rugged",
+    launchedBy:         "{n} otros tokens de este deployer",
+    ruggedCount:        "· {n} rugged",
+    activeCount:        "· {n} activos",
+    unknown:            "Desconocido",
+    colToken:           "Token",
+    colMint:            "Mint",
+    colLaunch:          "Lanzamiento",
+    colLiquidity:       "Liquidez",
+    colMarketCap:       "Cap. Mercado",
+    colStatus:          "Estado",
+    ruggedBadge:        "🔴 Rugged",
+    activeBadge:        "🟢 Activo",
+    clusterWarning:     "ADVERTENCIA: Bundles Coordinados Controlan {pct}% del Suministro en {wallets} billeteras",
+    highInteraction:    "Alta Interacción: {n} grupo{s} con actividad coordinada post-lanzamiento",
+    mevWarning:         "Bots MEV/Jito en {n} grupo{s} de fondos — posibles socios del desarrollador",
+    events:             "eventos",
+    legendSniper:       "Sniper",
+    legendCluster:      "Grupo",
+    legendKnown:        "Entidad conocida",
+    legendLp:           "Pool de Liquidez",
+    legendBurned:       "Quemado/Bloqueado",
+    legendLpHolder:     "Tenedor LP",
+    legendWhale:        "Ballena",
+    colTokenAcct:       "Cuenta Token",
+    colOwner:           "Propietario",
+    colTokens:          "Tokens",
+    colFirstBuy:        "Primera Compra",
+    fundedBy:           "Financiado Por",
+    colFlags:           "Marcas",
+    burnedLocked:       "🔥 Quemado/Bloqueado",
+    lpHolderBadge:      "🚨 Tenedor LP",
+    scannedAt:          "Escaneado a las",
+    poweredBy:          "Desarrollado por Helius",
+    headerSubtitle:     "ESCÁNER FORENSE DE TOKENS SOLANA",
+    live:               "EN VIVO",
+    recentScans:        "ESCANEOS RECIENTES",
+    searchPlaceholder:  "Buscar por nombre, símbolo o mint…",
+    noScansMatch:       "Ningún escaneo coincide con los filtros.",
+    clearHistory:       "Limpiar historial",
+    filterAll:          "TODOS",
+    filterLow:          "BAJO",
+    filterMed:          "MED",
+    filterHigh:         "ALTO",
   },
 };
 
@@ -1037,12 +1189,12 @@ export default function Scanner() {
               VAULT<span className="text-cyan-400">TRACE</span>
             </h1>
             <p className="text-slate-500 text-xs font-mono tracking-widest mt-0.5">
-              SOLANA TOKEN FORENSIC SCANNER
+              {t("headerSubtitle")}
             </p>
           </div>
           <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            LIVE
+            {t("live")}
           </div>
         </div>
       </header>
@@ -1094,7 +1246,7 @@ export default function Scanner() {
 
           {/* Advanced params hint */}
           <p className="mt-3 text-xs text-slate-400 font-mono">
-            Top {topN} holders · Chain depth {depth} · ~60–90s cold scan
+            {t("scanHint", { n: topN, depth })}
           </p>
         </div>
 
@@ -1103,6 +1255,7 @@ export default function Scanner() {
           history={history}
           onSelect={restoreReport}
           onClear={clearHistory}
+          lang={lang}
         />
 
         {/* ── Terminal Feed — visible only during an active scan ───────── */}
@@ -1201,7 +1354,7 @@ export default function Scanner() {
                 <RiskGauge score={report.risk?.score ?? 0} />
                 {report.launchTime && (
                   <p className="mt-4 text-xs text-slate-400 font-mono text-center">
-                    Launch: {fmtTs(report.launchTime)}
+                    {t("launch")} {fmtTs(report.launchTime)}
                   </p>
                 )}
               </div>
@@ -1213,38 +1366,38 @@ export default function Scanner() {
                 </p>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono text-slate-400">Mint Authority</span>
+                    <span className="text-xs font-mono text-slate-400">{t("mintAuth")}</span>
                     {report.contractSecurity.mintUnrevoked ? (
                       <span className="text-xs font-mono font-semibold text-red-400 bg-red-950/40 border border-red-800 px-2 py-0.5 rounded-full">
-                        NOT REVOKED 🚨
+                        {t("notRevoked")}
                       </span>
                     ) : (
                       <span className="text-xs font-mono font-semibold text-green-400 bg-green-950/40 border border-green-800 px-2 py-0.5 rounded-full">
-                        Revoked ✓
+                        {t("revoked")}
                       </span>
                     )}
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono text-slate-400">Freeze Authority</span>
+                    <span className="text-xs font-mono text-slate-400">{t("freezeAuth")}</span>
                     {report.contractSecurity.freezeUnrevoked ? (
                       <span className="text-xs font-mono font-semibold text-yellow-400 bg-yellow-950/40 border border-yellow-800 px-2 py-0.5 rounded-full">
-                        NOT REVOKED ⚠
+                        {t("notRevokedWarn")}
                       </span>
                     ) : (
                       <span className="text-xs font-mono font-semibold text-green-400 bg-green-950/40 border border-green-800 px-2 py-0.5 rounded-full">
-                        Revoked ✓
+                        {t("revoked")}
                       </span>
                     )}
                   </div>
                   <div className="flex items-center justify-between border-t border-slate-800 pt-3 mt-3">
-                    <span className="text-xs font-mono text-slate-400">Decimals</span>
+                    <span className="text-xs font-mono text-slate-400">{t("decimals")}</span>
                     <span className="text-xs font-mono text-slate-300">
                       {report.contractSecurity.decimals ?? "—"}
                     </span>
                   </div>
                   {report.contractSecurity.totalSupply !== null && (
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-mono text-slate-400">Total Supply</span>
+                      <span className="text-xs font-mono text-slate-400">{t("totalSupply")}</span>
                       <span className="text-xs font-mono text-slate-300">
                         {report.contractSecurity.totalSupply.toLocaleString()}
                       </span>
@@ -1261,12 +1414,12 @@ export default function Scanner() {
                 {report.contractSecurity.lp ? (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-mono text-slate-400">Status</span>
+                      <span className="text-xs font-mono text-slate-400">{t("lpStatus")}</span>
                       <LpStatusBadge lp={report.contractSecurity.lp} />
                     </div>
                     {report.contractSecurity.lp.poolType && (
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-mono text-slate-400">Pool</span>
+                        <span className="text-xs font-mono text-slate-400">{t("pool")}</span>
                         <span className="text-xs font-mono text-slate-300 capitalize">
                           {report.contractSecurity.lp.graduated
                             ? "Pump → Raydium"
@@ -1295,10 +1448,10 @@ export default function Scanner() {
                       if (lockedUsd) {
                         return (
                           <div className="flex items-center justify-between">
-                            <span className="text-xs font-mono text-slate-400">Locked Liquidity</span>
+                            <span className="text-xs font-mono text-slate-400">{t("lockedLiq")}</span>
                             <span className="text-xs font-mono font-semibold text-green-400">
                               ${lockedUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                              <span className="text-slate-500 font-normal ml-1">({safePct}% secured)</span>
+                              <span className="text-slate-500 font-normal ml-1">({t("secured", { pct: safePct })})</span>
                             </span>
                           </div>
                         );
@@ -1306,10 +1459,10 @@ export default function Scanner() {
                       if (lp.liquidityUsd) {
                         return (
                           <div className="flex items-center justify-between">
-                            <span className="text-xs font-mono text-slate-400">Total Liquidity</span>
+                            <span className="text-xs font-mono text-slate-400">{t("totalLiq")}</span>
                             <span className="text-xs font-mono text-slate-300">
                               ${lp.liquidityUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                              <span className="text-slate-500 font-normal ml-1">(lock unknown)</span>
+                              <span className="text-slate-500 font-normal ml-1">({t("lockUnknown")})</span>
                             </span>
                           </div>
                         );
@@ -1327,7 +1480,7 @@ export default function Scanner() {
                         <div className="border-t border-slate-800 pt-3 mt-3 space-y-2">
                           {burned > 0 && (
                             <div className="flex items-center justify-between">
-                              <span className="text-xs font-mono text-slate-400">LP Burned</span>
+                              <span className="text-xs font-mono text-slate-400">{t("lpBurned")}</span>
                               <span className={`text-xs font-mono font-semibold ${
                                 burned >= 99 ? "text-green-400" : "text-yellow-400"
                               }`}>
@@ -1338,7 +1491,7 @@ export default function Scanner() {
                           {locked > 0 && (
                             <div className="flex items-center justify-between">
                               <span className="text-xs font-mono text-slate-400">
-                                🔒 LP Locked
+                                {t("lpLocked")}
                                 {lp.lockerName && (
                                   <span className="text-slate-500 ml-1">({lp.lockerName})</span>
                                 )}
@@ -1350,32 +1503,32 @@ export default function Scanner() {
                           )}
                           {fullyUnprotected && (
                             <div className="flex items-center justify-between">
-                              <span className="text-xs font-mono text-red-400">⚠️ LP Unlocked</span>
-                              <span className="text-xs font-mono font-bold text-red-400">0% Protected</span>
+                              <span className="text-xs font-mono text-red-400">{t("lpUnlocked")}</span>
+                              <span className="text-xs font-mono font-bold text-red-400">{t("zeroProtected")}</span>
                             </div>
                           )}
                         </div>
                       );
                     })()}
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-mono text-slate-400">Snipers</span>
+                      <span className="text-xs font-mono text-slate-400">{t("snipers")}</span>
                       <span className={`text-xs font-mono font-semibold ${
                         (report.snipers?.length ?? 0) > 0 ? "text-red-400" : "text-green-400"
                       }`}>
-                        {report.snipers?.length ?? 0} detected
+                        {t("detected", { n: report.snipers?.length ?? 0 })}
                       </span>
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-mono text-slate-400">Clusters</span>
+                      <span className="text-xs font-mono text-slate-400">{t("clusters")}</span>
                       <span className={`text-xs font-mono font-semibold ${
                         (report.clusters?.length ?? 0) > 0 ? "text-yellow-400" : "text-green-400"
                       }`}>
-                        {report.clusters?.length ?? 0} found
+                        {t("found", { n: report.clusters?.length ?? 0 })}
                       </span>
                     </div>
                   </div>
                 ) : (
-                  <p className="text-xs text-slate-500 font-mono">No LP data</p>
+                  <p className="text-xs text-slate-500 font-mono">{t("noLpData")}</p>
                 )}
               </div>
             </div>
@@ -1402,13 +1555,13 @@ export default function Scanner() {
                   {!report.contractSecurity.mintUnrevoked && (
                     <div className="flex items-center gap-2 py-1.5 border-b border-slate-800/60">
                       <span className="text-sm">✅</span>
-                      <span className="text-xs font-mono text-green-400">Mint Authority Revoked</span>
+                      <span className="text-xs font-mono text-green-400">{t("mintAuthRevoked")}</span>
                     </div>
                   )}
                   {!report.contractSecurity.freezeUnrevoked && (
                     <div className="flex items-center gap-2 py-1.5 border-b border-slate-800/60">
                       <span className="text-sm">✅</span>
-                      <span className="text-xs font-mono text-green-400">Freeze Authority Disabled</span>
+                      <span className="text-xs font-mono text-green-400">{t("freezeAuthDisabled")}</span>
                     </div>
                   )}
                   {(report.contractSecurity.lp?.status === "burned" ||
@@ -1417,21 +1570,21 @@ export default function Scanner() {
                       <span className="text-sm">✅</span>
                       <span className="text-xs font-mono text-green-400">
                         {report.contractSecurity.lp.status === "locked"
-                          ? `LP Tokens Locked${report.contractSecurity.lp.lockerName ? ` via ${report.contractSecurity.lp.lockerName}` : " (Secure Vault)"}`
-                          : "LP Tokens Burned"}
+                          ? `${t("lpTokensLocked")}${report.contractSecurity.lp.lockerName ? ` via ${report.contractSecurity.lp.lockerName}` : ""}`
+                          : t("lpTokensBurned")}
                       </span>
                     </div>
                   )}
                   {(report.clusters?.length ?? 0) === 0 && (
                     <div className="flex items-center gap-2 py-1.5 border-b border-slate-800/60">
                       <span className="text-sm">✅</span>
-                      <span className="text-xs font-mono text-green-400">No Funding Clusters Detected</span>
+                      <span className="text-xs font-mono text-green-400">{t("noCluster")}</span>
                     </div>
                   )}
                   {(report.snipers?.length ?? 0) === 0 && (
                     <div className="flex items-center gap-2 py-1.5">
                       <span className="text-sm">✅</span>
-                      <span className="text-xs font-mono text-green-400">No Same-Block Snipers</span>
+                      <span className="text-xs font-mono text-green-400">{t("noSniper")}</span>
                     </div>
                   )}
                 </div>
@@ -1446,7 +1599,7 @@ export default function Scanner() {
                 </p>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono text-slate-400">Creator Wallet</span>
+                    <span className="text-xs font-mono text-slate-400">{t("creatorWallet")}</span>
                     <a
                       href={`https://solscan.io/account/${report.creatorAudit.address}`}
                       target="_blank"
@@ -1458,7 +1611,7 @@ export default function Scanner() {
                   </div>
                   {report.creatorAudit.txCount !== null && (
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-mono text-slate-400">Lifetime Transactions</span>
+                      <span className="text-xs font-mono text-slate-400">{t("lifetimeTx")}</span>
                       <span className={`text-xs font-mono font-semibold tabular-nums ${
                         report.creatorAudit.isFresh ? "text-red-400" : "text-green-400"
                       }`}>
@@ -1472,7 +1625,7 @@ export default function Scanner() {
                     <div className="flex items-center gap-2 bg-red-950/40 border border-red-800 rounded-lg px-3 py-2 mt-2">
                       <span className="flex-shrink-0">⚠️</span>
                       <span className="text-xs font-mono text-red-400 font-semibold tracking-wide">
-                        Fresh Wallet — High Risk
+                        {t("freshWallet")}
                       </span>
                     </div>
                   )}
@@ -1510,15 +1663,15 @@ export default function Scanner() {
                       <div className="flex items-center gap-2 bg-red-950/50 border border-red-700 rounded-lg px-3 py-2.5 mb-4">
                         <span className="text-lg flex-shrink-0">🚨</span>
                         <span className="text-xs font-mono font-semibold text-red-300 tracking-wide">
-                          HIGH RISK: Serial Deployer Detected — {rugCount} of {history.length} prior token{history.length !== 1 ? "s" : ""} rugged
+                          {t("serialDeployer", { rug: rugCount, total: history.length })}
                         </span>
                       </div>
                     )}
 
                     <div className="text-xs font-mono text-slate-500 mb-2">
-                      {history.length} other token{history.length !== 1 ? "s" : ""} launched by this deployer
-                      {rugCount > 0 && <span className="text-red-400 ml-2">· {rugCount} rugged</span>}
-                      {history.length - rugCount > 0 && <span className="text-green-400 ml-2">· {history.length - rugCount} active</span>}
+                      {t("launchedBy", { n: history.length })}
+                      {rugCount > 0 && <span className="text-red-400 ml-2">{t("ruggedCount", { n: rugCount })}</span>}
+                      {history.length - rugCount > 0 && <span className="text-green-400 ml-2">{t("activeCount", { n: history.length - rugCount })}</span>}
                     </div>
                   </div>
 
@@ -1526,71 +1679,71 @@ export default function Scanner() {
                     <table className="w-full text-xs font-mono">
                       <thead>
                         <tr className="border-y border-slate-800 bg-slate-900/60 text-slate-500 text-left">
-                          <th className="px-4 py-2.5">Token</th>
-                          <th className="px-4 py-2.5">Mint</th>
-                          <th className="px-4 py-2.5">Launch</th>
-                          <th className="px-4 py-2.5 text-right">Liquidity</th>
-                          <th className="px-4 py-2.5 text-right">Market Cap</th>
-                          <th className="px-4 py-2.5 text-center">Status</th>
+                          <th className="px-4 py-2.5">{t("colToken")}</th>
+                          <th className="px-4 py-2.5">{t("colMint")}</th>
+                          <th className="px-4 py-2.5">{t("colLaunch")}</th>
+                          <th className="px-4 py-2.5 text-right">{t("colLiquidity")}</th>
+                          <th className="px-4 py-2.5 text-right">{t("colMarketCap")}</th>
+                          <th className="px-4 py-2.5 text-center">{t("colStatus")}</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {history.map((t) => (
+                        {history.map((token) => (
                           <tr
-                            key={t.mint}
+                            key={token.mint}
                             className={`border-b border-slate-800/60 transition-colors ${
-                              t.status === "rugged"
+                              token.status === "rugged"
                                 ? "bg-red-950/15 hover:bg-red-950/25"
                                 : "hover:bg-slate-800/30"
                             }`}
                           >
                             <td className="px-4 py-2.5 text-slate-200 whitespace-nowrap">
-                              {t.name ? (
+                              {token.name ? (
                                 <>
-                                  <span className="font-semibold">{t.name}</span>
-                                  {t.symbol && (
-                                    <span className="text-slate-500 ml-1.5">{t.symbol}</span>
+                                  <span className="font-semibold">{token.name}</span>
+                                  {token.symbol && (
+                                    <span className="text-slate-500 ml-1.5">{token.symbol}</span>
                                   )}
                                 </>
                               ) : (
-                                <span className="text-slate-500 italic">Unknown</span>
+                                <span className="text-slate-500 italic">{t("unknown")}</span>
                               )}
                             </td>
                             <td className="px-4 py-2.5">
                               <a
-                                href={`https://solscan.io/token/${t.mint}`}
+                                href={`https://solscan.io/token/${token.mint}`}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="text-slate-400 hover:text-cyan-400 transition-colors"
                               >
-                                {t.mint.slice(0, 6)}…{t.mint.slice(-4)}
+                                {token.mint.slice(0, 6)}…{token.mint.slice(-4)}
                               </a>
                             </td>
                             <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap">
-                              {fmtTs(t.launchTs)}
+                              {fmtTs(token.launchTs)}
                             </td>
                             <td className="px-4 py-2.5 text-right text-slate-300 whitespace-nowrap">
-                              {fmtUsd(t.liquidityUsd)}
+                              {fmtUsd(token.liquidityUsd)}
                             </td>
                             <td className="px-4 py-2.5 text-right text-slate-300 whitespace-nowrap">
-                              {fmtUsd(t.marketCap)}
+                              {fmtUsd(token.marketCap)}
                             </td>
                             <td className="px-4 py-2.5 text-center whitespace-nowrap">
-                              {t.status === "rugged" ? (
+                              {token.status === "rugged" ? (
                                 <span className="inline-flex items-center gap-1 bg-red-900/40 border border-red-700/60 text-red-300 rounded px-2 py-0.5">
-                                  🔴 Rugged
-                                  {t.priceChange24h != null && (
+                                  {t("ruggedBadge")}
+                                  {token.priceChange24h != null && (
                                     <span className="text-red-500 font-normal">
-                                      {t.priceChange24h > 0 ? "+" : ""}{t.priceChange24h.toFixed(0)}%
+                                      {token.priceChange24h > 0 ? "+" : ""}{token.priceChange24h.toFixed(0)}%
                                     </span>
                                   )}
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center gap-1 bg-green-900/30 border border-green-700/50 text-green-300 rounded px-2 py-0.5">
-                                  🟢 Active
-                                  {t.priceChange24h != null && (
-                                    <span className={t.priceChange24h >= 0 ? "text-green-400" : "text-red-400"}>
-                                      {t.priceChange24h > 0 ? "+" : ""}{t.priceChange24h.toFixed(0)}%
+                                  {t("activeBadge")}
+                                  {token.priceChange24h != null && (
+                                    <span className={token.priceChange24h >= 0 ? "text-green-400" : "text-red-400"}>
+                                      {token.priceChange24h > 0 ? "+" : ""}{token.priceChange24h.toFixed(0)}%
                                     </span>
                                   )}
                                 </span>
@@ -1620,19 +1773,16 @@ export default function Scanner() {
                   <div className="rounded-xl border border-orange-700/60 bg-orange-950/30 p-4 flex items-center gap-3">
                     <span className="text-xl flex-shrink-0">⚠️</span>
                     <p className="text-sm font-mono font-semibold text-orange-300">
-                      WARNING: Coordinated Bundles Control {totalPct.toFixed(1)}% of Supply across {totalWallets} wallets
+                      {t("clusterWarning", { pct: totalPct.toFixed(1), wallets: totalWallets })}
                     </p>
                   </div>
                   {interactiveClusters.length > 0 && (
                     <div className="rounded-xl border border-yellow-700/60 bg-yellow-950/25 p-3 flex items-center gap-3">
                       <span className="text-lg flex-shrink-0">⚠️</span>
                       <p className="text-xs font-mono font-semibold text-yellow-300">
-                        High Interaction: Coordinated Movement detected in{" "}
-                        {interactiveClusters.length} cluster
-                        {interactiveClusters.length !== 1 ? "s" : ""} —
-                        members transacted with each other post-launch
+                        {t("highInteraction", { n: interactiveClusters.length, s: interactiveClusters.length !== 1 ? "s" : "" })}
                         {interactiveClusters[0].interactionCount
-                          ? ` (${interactiveClusters.reduce((s, c) => s + (c.interactionCount ?? 0), 0)} events)`
+                          ? ` (${interactiveClusters.reduce((s, c) => s + (c.interactionCount ?? 0), 0)} ${t("events")})`
                           : ""}
                       </p>
                     </div>
@@ -1641,10 +1791,7 @@ export default function Scanner() {
                     <div className="rounded-xl border border-cyan-800/60 bg-cyan-950/20 p-3 flex items-center gap-3">
                       <span className="text-lg flex-shrink-0">🤖</span>
                       <p className="text-xs font-mono font-semibold text-cyan-300">
-                        MEV/Jito bots detected inside{" "}
-                        {mevContaminatedClusters.length} funding cluster
-                        {mevContaminatedClusters.length !== 1 ? "s" : ""} —
-                        may indicate developer-aligned bot partners
+                        {t("mevWarning", { n: mevContaminatedClusters.length, s: mevContaminatedClusters.length !== 1 ? "s" : "" })}
                       </p>
                     </div>
                   )}
@@ -1665,25 +1812,25 @@ export default function Scanner() {
                     </h3>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1">
-                        <span className="text-red-400">🎯</span> Sniper
+                        <span className="text-red-400">🎯</span> {t("legendSniper")}
                       </span>
                       <span className="flex items-center gap-1">
-                        <span>🟣</span> Cluster
+                        <span>🟣</span> {t("legendCluster")}
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="text-cyan-400">⚡</span> Known entity
+                        <span className="text-cyan-400">⚡</span> {t("legendKnown")}
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="text-cyan-400">💧</span> Liquidity Pool
+                        <span className="text-cyan-400">💧</span> {t("legendLp")}
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="text-green-400">🔥</span> Burned/Locked
+                        <span className="text-green-400">🔥</span> {t("legendBurned")}
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="text-red-400">🚨</span> LP Holder
+                        <span className="text-red-400">🚨</span> {t("legendLpHolder")}
                       </span>
                       <span className="flex items-center gap-1">
-                        <span>🐳</span> Whale
+                        <span>🐳</span> {t("legendWhale")}
                       </span>
                     </div>
                   </div>
@@ -1694,13 +1841,13 @@ export default function Scanner() {
                       <thead>
                         <tr className="border-b border-slate-800 text-muted-foreground">
                           <th className="px-4 py-2.5 text-right w-10">#</th>
-                          <th className="px-4 py-2.5 text-left">Token Account</th>
-                          <th className="px-4 py-2.5 text-left">Owner</th>
-                          <th className="px-4 py-2.5 text-right">Tokens</th>
+                          <th className="px-4 py-2.5 text-left">{t("colTokenAcct")}</th>
+                          <th className="px-4 py-2.5 text-left">{t("colOwner")}</th>
+                          <th className="px-4 py-2.5 text-right">{t("colTokens")}</th>
                           <th className="px-4 py-2.5 text-right">%</th>
-                          <th className="px-4 py-2.5 text-left">First Buy</th>
-                          <th className="px-4 py-2.5 text-left">Funded By</th>
-                          <th className="px-4 py-2.5 text-center">Flags</th>
+                          <th className="px-4 py-2.5 text-left">{t("colFirstBuy")}</th>
+                          <th className="px-4 py-2.5 text-left">{t("fundedBy")}</th>
+                          <th className="px-4 py-2.5 text-center">{t("colFlags")}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1839,7 +1986,7 @@ export default function Scanner() {
                                       title="Burned or locked tokens"
                                       className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-950 text-green-400 border border-green-800 whitespace-nowrap"
                                     >
-                                      🔥 Burned/Locked
+                                      {t("burnedLocked")}
                                     </span>
                                   )}
                                   {h.isLpHolder && (
@@ -1847,7 +1994,7 @@ export default function Scanner() {
                                       title="Holds unlocked LP tokens — can rug pool"
                                       className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-950 text-red-400 border border-red-800 whitespace-nowrap"
                                     >
-                                      🚨 LP Holder
+                                      {t("lpHolderBadge")}
                                     </span>
                                   )}
                                   {h.isWhale && (
@@ -1872,11 +2019,11 @@ export default function Scanner() {
 
             {/* Scan Meta */}
             <div className="text-center text-xs font-mono text-slate-400 pb-4">
-              Scanned at {new Date(report.timestamp).toLocaleString()} ·{" "}
+              {t("scannedAt")} {new Date(report.timestamp).toLocaleString()} ·{" "}
               {report.scanDurationSeconds != null
                 ? `${report.scanDurationSeconds}s`
                 : ""}{" "}
-              · Powered by Helius
+              · {t("poweredBy")}
             </div>
           </div>
         )}
@@ -1885,9 +2032,9 @@ export default function Scanner() {
         {status === "idle" && (
           <div className="text-center py-16 text-slate-400 font-mono text-sm space-y-2">
             <p className="text-4xl mb-4">🔍</p>
-            <p>Enter a Solana mint address above to run a forensic scan.</p>
+            <p>{t("idlePlaceholder")}</p>
             <p className="text-xs text-slate-500">
-              Checks mint/freeze authority · LP burn status · holder clusters · sniper wallets · funding chains
+              {t("idleDesc")}
             </p>
           </div>
         )}
