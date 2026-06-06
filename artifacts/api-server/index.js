@@ -242,14 +242,25 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000);
 
+// In-flight deduplication: if two concurrent runScan calls race to populate
+// the same key, only one executes fn(); the other awaits that same promise.
+// This prevents redundant RPC fan-out and eliminates cache-write races.
+const IN_FLIGHT = new Map();
+
 // Fetch-or-populate: returns cached value when fresh, otherwise calls fn(),
-// stores the result, and returns it.
+// stores the result, and returns it.  Concurrent callers on the same key
+// share one in-flight promise instead of issuing duplicate fetches.
 async function getCached(key, ttl, fn) {
   const hit = cacheGet(key);
   if (hit !== undefined) return hit;
-  const value = await fn();
-  cacheSet(key, value, ttl);
-  return value;
+  if (IN_FLIGHT.has(key)) return IN_FLIGHT.get(key);
+  const promise = (async () => {
+    const value = await fn();
+    cacheSet(key, value, ttl);
+    return value;
+  })().finally(() => IN_FLIGHT.delete(key));
+  IN_FLIGHT.set(key, promise);
+  return promise;
 }
 
 // ── Token Price (DexScreener) ──────────────────────────────────────────────
@@ -548,6 +559,8 @@ async function traceChain(start, maxDepth) {
 
 async function getTokenMetadata(mint) {
   return getCached(`metadata:${mint}`, TTL_24H, async () => {
+    // ── Primary: Helius DAS getAsset ────────────────────────────────────────
+    let name = null, symbol = null, logoUri = null;
     try {
       const res = await fetch(RPC_URL, {
         method: "POST",
@@ -560,23 +573,38 @@ async function getTokenMetadata(mint) {
         }),
       });
       const json = await res.json();
-      const result = json.result ?? {};
-      const meta = result.content?.metadata ?? {};
-      const links = result.content?.links ?? {};
-      const files = result.content?.files ?? [];
-      const logoUri =
+      const asset = json.result ?? {};
+      const meta  = asset.content?.metadata ?? {};
+      const links = asset.content?.links    ?? {};
+      const files = asset.content?.files    ?? [];
+      name    = meta.name   ?? null;
+      symbol  = meta.symbol ?? null;
+      logoUri =
         links.image ??
         files.find((f) => f.cdn_uri || f.uri)?.cdn_uri ??
         files.find((f) => f.cdn_uri || f.uri)?.uri ??
         null;
-      return {
-        name:    meta.name    ?? null,
-        symbol:  meta.symbol  ?? null,
-        logoUri: logoUri      ?? null,
-      };
-    } catch {
-      return { name: null, symbol: null, logoUri: null };
+    } catch { /* fall through to Pump.fun */ }
+
+    // ── Fallback: Pump.fun coin data ────────────────────────────────────────
+    // DAS indexing can lag by several seconds for brand-new mints.
+    // Pump.fun stores name/symbol immediately on launch, so this covers the gap.
+    if (!name) {
+      try {
+        const pfRes = await fetch(
+          `https://frontend-api.pump.fun/coins/${mint}`,
+          { signal: AbortSignal.timeout(6_000) },
+        );
+        if (pfRes.ok) {
+          const pf = await pfRes.json();
+          name    = pf?.name   ?? null;
+          symbol  = pf?.symbol ?? null;
+          if (!logoUri) logoUri = pf?.image_uri ?? pf?.uri ?? null;
+        }
+      } catch { /* non-fatal */ }
     }
+
+    return { name, symbol, logoUri };
   });
 }
 
@@ -1585,6 +1613,55 @@ export async function runScan(mintAddress, options = {}) {
         const ts = c2.birthTime ? ` (${fmt(c2.birthTime)})` : "";
         log(`       ${i === 0 ? "Start" : `Hop ${i}`} → ${c2.addr}${lbl}${ts}`);
       });
+      // ── Post-funding Interaction Scan ────────────────────────────────────
+      // For small clusters, scan each member's recent post-launch transactions
+      // to detect intra-cluster transfers. Shared post-launch movement is a
+      // strong signal of coordinated sell-off or coordinated holding strategy.
+      // Capped at 8 members × 12 sigs × getTx to avoid scan latency spikes.
+      let hasPostFundingInteraction = false;
+      let interactionCount = 0;
+      if (rows.length >= 2 && rows.length <= 8 && launchTime) {
+        const memberOwners    = new Set(rows.map((r) => r.owner));
+        const memberTokenAccts = new Set(rows.map((r) => r.tokenAcct));
+        let txChecked = 0;
+        const TX_CAP = 64; // hard cap on getTx calls for this cluster
+
+        await Promise.all(
+          rows.map(async (r) => {
+            try {
+              const sigs =
+                (await rpc("getSignaturesForAddress", [r.owner, { limit: 20 }])) ?? [];
+              const postLaunch = sigs.filter((s) => (s.blockTime ?? 0) > launchTime);
+              for (const s of postLaunch.slice(0, 12)) {
+                if (txChecked >= TX_CAP) break;
+                txChecked++;
+                try {
+                  const tx = await getTx(s.signature);
+                  if (!tx) continue;
+                  for (const acct of getAccounts(tx)) {
+                    if (acct === r.owner || acct === r.tokenAcct) continue;
+                    if (memberOwners.has(acct) || memberTokenAccts.has(acct)) {
+                      interactionCount++;
+                      hasPostFundingInteraction = true;
+                    }
+                  }
+                } catch { /* non-fatal */ }
+              }
+            } catch { /* non-fatal */ }
+          }),
+        );
+
+        if (hasPostFundingInteraction) {
+          log(
+            ansi(
+              "yellow",
+              `     ⚠  Post-launch intra-cluster interactions: ${interactionCount} event(s)`,
+              tty,
+            ),
+          );
+        }
+      }
+
       report.clusters.push({
         parent,
         label,
@@ -1592,6 +1669,8 @@ export async function runScan(mintAddress, options = {}) {
         totalTokens,
         pct: parseFloat(pct),
         chain,
+        hasPostFundingInteraction,
+        interactionCount,
       });
       log();
     }
@@ -1747,6 +1826,20 @@ export async function runScan(mintAddress, options = {}) {
   }
   const confirmedSnipers = snipers.filter((r) => !mevBotRanks.has(r.rank));
   const mevBots          = snipers.filter((r) =>  mevBotRanks.has(r.rank));
+
+  // ── MEV Attribution ──────────────────────────────────────────────────────
+  // Stamp mevBot=true on holder rows so the frontend can display the
+  // 🤖 MEV/Jito Partner badge.  Also annotate any clusters that contain
+  // MEV-bot members — distinguishes developer-aligned snipers from neutral arb.
+  const holderByRank = new Map(holderRows.map((r) => [r.rank, r]));
+  for (const rank of mevBotRanks) {
+    const row = holderByRank.get(rank);
+    if (row) row.mevBot = true;
+  }
+  for (const cl of report.clusters) {
+    const mevMembers = cl.rows.filter((rank) => mevBotRanks.has(rank));
+    if (mevMembers.length > 0) cl.mevBotMembers = mevMembers;
+  }
 
   if (confirmedSnipers.length > 0) {
     log(

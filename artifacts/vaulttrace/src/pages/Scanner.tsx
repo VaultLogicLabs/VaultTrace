@@ -58,6 +58,7 @@ interface HolderRow {
   isWhale?: boolean;
   isKnownEntity?: boolean;
   cexLabel?: string | null;
+  mevBot?: boolean;
   tokens: number;
   pct: number;
   buyTime: number | null;
@@ -72,6 +73,9 @@ interface ClusterInfo {
   rows: number[];
   totalTokens: number;
   pct: number;
+  mevBotMembers?: number[];
+  hasPostFundingInteraction?: boolean;
+  interactionCount?: number;
 }
 
 interface TokenMetadata {
@@ -1533,12 +1537,45 @@ export default function Scanner() {
             {(report.clusters?.length ?? 0) > 0 && (() => {
               const totalPct = report.clusters.reduce((s, c) => s + c.pct, 0);
               const totalWallets = report.clusters.reduce((s, c) => s + c.rows.length, 0);
+              const interactiveClusters = report.clusters.filter(
+                (c) => c.hasPostFundingInteraction,
+              );
+              const mevContaminatedClusters = report.clusters.filter(
+                (c) => (c.mevBotMembers?.length ?? 0) > 0,
+              );
               return (
-                <div className="rounded-xl border border-orange-700/60 bg-orange-950/30 p-4 flex items-center gap-3">
-                  <span className="text-xl flex-shrink-0">⚠️</span>
-                  <p className="text-sm font-mono font-semibold text-orange-300">
-                    WARNING: Coordinated Bundles Control {totalPct.toFixed(1)}% of Supply across {totalWallets} wallets
-                  </p>
+                <div className="space-y-2">
+                  <div className="rounded-xl border border-orange-700/60 bg-orange-950/30 p-4 flex items-center gap-3">
+                    <span className="text-xl flex-shrink-0">⚠️</span>
+                    <p className="text-sm font-mono font-semibold text-orange-300">
+                      WARNING: Coordinated Bundles Control {totalPct.toFixed(1)}% of Supply across {totalWallets} wallets
+                    </p>
+                  </div>
+                  {interactiveClusters.length > 0 && (
+                    <div className="rounded-xl border border-yellow-700/60 bg-yellow-950/25 p-3 flex items-center gap-3">
+                      <span className="text-lg flex-shrink-0">⚠️</span>
+                      <p className="text-xs font-mono font-semibold text-yellow-300">
+                        High Interaction: Coordinated Movement detected in{" "}
+                        {interactiveClusters.length} cluster
+                        {interactiveClusters.length !== 1 ? "s" : ""} —
+                        members transacted with each other post-launch
+                        {interactiveClusters[0].interactionCount
+                          ? ` (${interactiveClusters.reduce((s, c) => s + (c.interactionCount ?? 0), 0)} events)`
+                          : ""}
+                      </p>
+                    </div>
+                  )}
+                  {mevContaminatedClusters.length > 0 && (
+                    <div className="rounded-xl border border-cyan-800/60 bg-cyan-950/20 p-3 flex items-center gap-3">
+                      <span className="text-lg flex-shrink-0">🤖</span>
+                      <p className="text-xs font-mono font-semibold text-cyan-300">
+                        MEV/Jito bots detected inside{" "}
+                        {mevContaminatedClusters.length} funding cluster
+                        {mevContaminatedClusters.length !== 1 ? "s" : ""} —
+                        may indicate developer-aligned bot partners
+                      </p>
+                    </div>
+                  )}
                 </div>
               );
             })()}
@@ -1698,6 +1735,14 @@ export default function Scanner() {
                                       <span title="Funding cluster">🟣</span>
                                     );
                                   })()}
+                                  {h.mevBot && (
+                                    <span
+                                      title="MEV/Jito Partner — automated bot, not a human sniper"
+                                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-950 text-cyan-300 border border-cyan-700 whitespace-nowrap"
+                                    >
+                                      🤖 MEV
+                                    </span>
+                                  )}
                                   {!!h.funderLabel && (
                                     <span title={h.funderLabel ?? ""}>⚡</span>
                                   )}
