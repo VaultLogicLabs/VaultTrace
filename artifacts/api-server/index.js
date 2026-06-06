@@ -1234,6 +1234,7 @@ export async function runScan(mintAddress, options = {}) {
     silent = false, // suppress all stdout when called from server
     save = null,
     onProgress = null, // optional callback for SSE / streaming callers
+    lang = "en",      // BCP-47 language tag; drives I18N lookups in section()
   } = options;
 
   const startTime = Date.now();
@@ -1259,7 +1260,8 @@ export async function runScan(mintAddress, options = {}) {
     lines.push(s);
     if (tty) process.stdout.write(s + "\n");
   }
-  function section(titleKey, lang = "en") {
+  function section(titleKey) {
+    // lang is closed over from runScan's options — no need to pass it per-call.
     const title = (I18N[lang] ?? I18N.en)[titleKey] ?? titleKey;
     log();
     log(ansi("cyan", "─".repeat(65), tty));

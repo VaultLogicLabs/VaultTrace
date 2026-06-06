@@ -726,6 +726,7 @@ export default function Scanner() {
   const [mint, setMint] = useState("");
   const [topN] = useState(20);
   const [depth] = useState(3);
+  const [lang, setLang] = useState<"en" | "es">("en");
   const [status, setStatus] = useState<Status>("idle");
   const [events, setEvents] = useState<ScanEvent[]>([]);
   const [report, setReport] = useState<ScanReport | null>(null);
@@ -842,7 +843,7 @@ export default function Scanner() {
     setMcFlash(null);
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
 
-    const url = `/api/scan/${encodeURIComponent(trimmed)}/stream?top=${topN}&depth=${depth}`;
+    const url = `/api/scan/${encodeURIComponent(trimmed)}/stream?top=${topN}&depth=${depth}&lang=${lang}`;
     const es = new EventSource(url);
     esRef.current = es;
 
@@ -1014,6 +1015,15 @@ export default function Scanner() {
                          tracking-wide"
             >
               {status === "scanning" ? "SCANNING…" : "SCAN"}
+            </button>
+            <button
+              onClick={() => setLang((l) => (l === "en" ? "es" : "en"))}
+              title={lang === "en" ? "Switch to Spanish" : "Cambiar a inglés"}
+              className="px-3 py-3 rounded-lg text-sm border border-slate-700
+                         bg-slate-900 hover:bg-slate-800 transition-colors
+                         text-slate-300 hover:text-white"
+            >
+              {lang === "en" ? "🇪🇸" : "🇺🇸"}
             </button>
           </div>
           {errorMsg && (

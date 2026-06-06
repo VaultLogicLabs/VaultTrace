@@ -50,6 +50,7 @@ app.get("/api/scan/:mintAddress/stream", async (req, res) => {
   const { mintAddress } = req.params;
   const topN  = Math.min(50, Math.max(1, parseInt(req.query.top   ?? "20")));
   const depth = Math.min(10, Math.max(1, parseInt(req.query.depth ?? "6")));
+  const lang  = ["en", "es"].includes(req.query.lang) ? req.query.lang : "en";
 
   if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mintAddress)) {
     return res.status(400).json({ error: "Invalid mint address format." });
@@ -75,7 +76,7 @@ app.get("/api/scan/:mintAddress/stream", async (req, res) => {
 
   console.log(`[stream] ${mintAddress}  top=${topN}  depth=${depth}`);
   try {
-    const report = await runScan(mintAddress, { topN, depth, silent: true, onProgress: send });
+    const report = await runScan(mintAddress, { topN, depth, silent: true, onProgress: send, lang });
     send({ type: "complete", report });
     console.log(`[stream] done  ${mintAddress}  score=${report.risk?.score}`);
   } catch (err) {
