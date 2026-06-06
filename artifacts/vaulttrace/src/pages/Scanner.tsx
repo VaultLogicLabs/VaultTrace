@@ -721,12 +721,62 @@ function RecentScansPanel({ history, onSelect, onClear }: RecentScansPanelProps)
   );
 }
 
+// ── Frontend I18N ───────────────────────────────────────────────────────────
+// Keys are short identifiers; use {varName} placeholders for dynamic values.
+// t(key, { n: topN }) replaces {n} automatically.
+const UI_I18N: Record<string, Record<string, string>> = {
+  en: {
+    riskScore:      "RISK SCORE",
+    contractSec:    "CONTRACT SECURITY",
+    liquidityPool:  "LIQUIDITY POOL",
+    auditChecklist: "AUDIT CHECKLIST",
+    creatorAudit:   "CREATOR AUDIT",
+    deployerHist:   "⚠️ DEPLOYER HISTORY (SERIAL RUGGER AUDIT)",
+    topHolders:     "Top {n} Holders",
+    mintAuth:       "Mint Authority",
+    freezeAuth:     "Freeze Authority",
+    lockedLiq:      "Locked Liquidity",
+    totalLiq:       "Total Liquidity",
+    snipers:        "Snipers",
+    clusters:       "Clusters",
+    noCluster:      "No Funding Clusters Detected",
+    noSniper:       "No Same-Block Snipers",
+    fundedBy:       "Funded By",
+  },
+  es: {
+    riskScore:      "PUNTUACIÓN DE RIESGO",
+    contractSec:    "SEGURIDAD DEL CONTRATO",
+    liquidityPool:  "POOL DE LIQUIDEZ",
+    auditChecklist: "LISTA DE AUDITORÍA",
+    creatorAudit:   "AUDITORÍA DEL CREADOR",
+    deployerHist:   "⚠️ HISTORIAL DEL DEPLOYER (AUDIT DE RUGGERS)",
+    topHolders:     "{n} Principales Tenedores",
+    mintAuth:       "Autoridad de Emisión",
+    freezeAuth:     "Autoridad de Congelación",
+    lockedLiq:      "Liquidez Bloqueada",
+    totalLiq:       "Liquidez Total",
+    snipers:        "Snipers",
+    clusters:       "Grupos",
+    noCluster:      "Sin Grupos de Financiamiento",
+    noSniper:       "Sin Snipers en el Mismo Bloque",
+    fundedBy:       "Financiado Por",
+  },
+};
+
 // ── Main Component ─────────────────────────────────────────────────────────
 export default function Scanner() {
   const [mint, setMint] = useState("");
   const [topN] = useState(20);
   const [depth] = useState(3);
   const [lang, setLang] = useState<"en" | "es">("en");
+
+  /** Translate a UI key, substituting {varName} placeholders from vars. */
+  const t = (key: string, vars: Record<string, string | number> = {}) => {
+    let s = (UI_I18N[lang] ?? UI_I18N.en)[key] ?? key;
+    for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, String(v));
+    return s;
+  };
+
   const [status, setStatus] = useState<Status>("idle");
   const [events, setEvents] = useState<ScanEvent[]>([]);
   const [report, setReport] = useState<ScanReport | null>(null);
@@ -1134,7 +1184,7 @@ export default function Scanner() {
               {/* Risk Gauge */}
               <div className="rounded-xl border border-slate-800 bg-card p-6 flex flex-col items-center justify-center shadow-lg">
                 <p className="text-xs font-mono font-semibold text-muted-foreground tracking-widest mb-4">
-                  RISK SCORE
+                  {t("riskScore")}
                 </p>
                 <RiskGauge score={report.risk?.score ?? 0} />
                 {report.launchTime && (
@@ -1147,7 +1197,7 @@ export default function Scanner() {
               {/* Contract Security */}
               <div className="rounded-xl border border-slate-800 bg-card p-5 shadow-lg">
                 <p className="text-xs font-mono font-semibold text-muted-foreground tracking-widest mb-4">
-                  CONTRACT SECURITY
+                  {t("contractSec")}
                 </p>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
@@ -1194,7 +1244,7 @@ export default function Scanner() {
               {/* LP Status */}
               <div className="rounded-xl border border-slate-800 bg-card p-5 shadow-lg">
                 <p className="text-xs font-mono font-semibold text-muted-foreground tracking-widest mb-4">
-                  LIQUIDITY POOL
+                  {t("liquidityPool")}
                 </p>
                 {report.contractSecurity.lp ? (
                   <div className="space-y-3">
@@ -1322,7 +1372,7 @@ export default function Scanner() {
             {(report.risk?.signals?.length > 0 || report.contractSecurity) && (
               <div className="rounded-xl border border-slate-800 bg-card p-5 shadow-lg">
                 <p className="text-xs font-mono font-semibold text-muted-foreground tracking-widest mb-4">
-                  AUDIT CHECKLIST
+                  {t("auditChecklist")}
                 </p>
                 <div className="space-y-0">
                   {(report.risk?.signals ?? []).map((s, i) => {
@@ -1380,7 +1430,7 @@ export default function Scanner() {
             {report.creatorAudit?.address && (
               <div className="rounded-xl border border-slate-800 bg-card p-5 shadow-lg">
                 <p className="text-xs font-mono font-semibold text-muted-foreground tracking-widest mb-4">
-                  CREATOR AUDIT
+                  {t("creatorAudit")}
                 </p>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
@@ -1441,7 +1491,7 @@ export default function Scanner() {
                 <div className="rounded-xl border border-slate-800 bg-card shadow-lg overflow-hidden">
                   <div className="px-5 pt-5 pb-4">
                     <p className="text-xs font-mono font-semibold text-muted-foreground tracking-widest mb-3">
-                      ⚠️ DEPLOYER HISTORY (SERIAL RUGGER AUDIT)
+                      {t("deployerHist")}
                     </p>
 
                     {isSerialRugger && (
@@ -1599,7 +1649,7 @@ export default function Scanner() {
                   {/* Table header / legend */}
                   <div className="px-5 py-3 border-b border-slate-800 flex items-center justify-between">
                     <h3 className="text-sm font-semibold text-foreground tracking-wide">
-                      Top {topN} Holders
+                      {t("topHolders", { n: topN })}
                     </h3>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1">
