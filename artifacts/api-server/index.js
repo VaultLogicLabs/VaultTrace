@@ -13,7 +13,7 @@ const IS_CLI = process.argv[1]?.endsWith("index.js");
 // ── Config ─────────────────────────────────────────────────────────────────
 const API_KEY = process.env.HELIUS_API_KEY;
 const RPC_URL = `https://mainnet.helius-rpc.com/?api-key=${API_KEY}`;
-const DELAY_MS = 220;
+const DELAY_MS = 500;
 const SYNC_WIN = 30;
 const EARLY_WIN = 300;
 
@@ -570,6 +570,34 @@ async function getTokenAcctOwner(tokenAcct) {
   });
 }
 
+// Batch variant — resolves up to 100 token-account owners in one RPC call.
+// Writes results into the same owner:{address} cache slots so subsequent
+// single-address lookups are cache-hits.  Returns an array aligned with addrs.
+async function getTokenAcctOwnerBatch(addrs) {
+  if (!addrs.length) return [];
+  const owners = addrs.map((a) => {
+    const hit = cacheGet(`owner:${a}`);
+    return hit !== undefined ? hit : null;        // undefined = cache miss
+  });
+  const missingIdxs = owners
+    .map((v, i) => (v === null ? i : -1))
+    .filter((i) => i >= 0);
+  if (!missingIdxs.length) return owners;
+  try {
+    const infos = await rpc("getMultipleAccounts", [
+      missingIdxs.map((i) => addrs[i]),
+      { encoding: "jsonParsed" },
+    ]);
+    (infos?.value ?? []).forEach((info, j) => {
+      const idx   = missingIdxs[j];
+      const owner = info?.data?.parsed?.info?.owner ?? null;
+      owners[idx] = owner;
+      cacheSet(`owner:${addrs[idx]}`, owner, TTL_24H);
+    });
+  } catch { /* non-fatal — null owners handled by callers */ }
+  return owners;
+}
+
 async function getFirstAcquisition(tokenAcct) {
   return getCached(`firstAcq:${tokenAcct}`, TTL_24H, async () => {
     const sigs = await getOldestSigs(tokenAcct, 5);
@@ -898,9 +926,10 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
       let lockedAmt = 0;
       let lockerName = null;
       let firstLpOwner = null;
-      for (const h of holders.slice(0, 5)) {
-        await sleep(DELAY_MS);
-        const owner = await getTokenAcctOwner(h.address);
+      const _lpSlice1  = holders.slice(0, 5);
+      const _lpOwners1 = await getTokenAcctOwnerBatch(_lpSlice1.map((h) => h.address));
+      for (let _j = 0; _j < _lpSlice1.length; _j++) {
+        const h = _lpSlice1[_j]; const owner = _lpOwners1[_j];
         if (firstLpOwner === null) firstLpOwner = owner;
         if (owner === NULL_ADDR) {
           burnedAmt += parseInt(h.amount ?? "0");
@@ -1013,9 +1042,10 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
     const largest2  = await rpc("getTokenLargestAccounts", [lpMint2]);
     const holders2  = largest2?.value ?? [];
     let burnedAmt2 = 0, lockedAmt2 = 0, lockerName2 = null, firstLpOwner2 = null;
-    for (const h of holders2.slice(0, 5)) {
-      await sleep(DELAY_MS);
-      const owner2 = await getTokenAcctOwner(h.address);
+    const _lpSlice2  = holders2.slice(0, 5);
+    const _lpOwners2 = await getTokenAcctOwnerBatch(_lpSlice2.map((h) => h.address));
+    for (let _j = 0; _j < _lpSlice2.length; _j++) {
+      const h = _lpSlice2[_j]; const owner2 = _lpOwners2[_j];
       if (firstLpOwner2 === null) firstLpOwner2 = owner2;
       if (owner2 === NULL_ADDR) {
         burnedAmt2 += parseInt(h.amount ?? "0");
@@ -1081,9 +1111,10 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
         const holders3  = largest3?.value ?? [];
         let burnedAmt3 = 0, lockedAmt3 = 0, lockerName3 = null;
         let firstLpOwner3 = null;
-        for (const h of holders3.slice(0, 5)) {
-          await sleep(DELAY_MS);
-          const owner3 = await getTokenAcctOwner(h.address);
+        const _lpSlice3  = holders3.slice(0, 5);
+        const _lpOwners3 = await getTokenAcctOwnerBatch(_lpSlice3.map((h) => h.address));
+        for (let _j = 0; _j < _lpSlice3.length; _j++) {
+          const h = _lpSlice3[_j]; const owner3 = _lpOwners3[_j];
           if (firstLpOwner3 === null) firstLpOwner3 = owner3;
           if (owner3 === NULL_ADDR) {
             burnedAmt3 += parseInt(h.amount ?? "0");
@@ -1220,9 +1251,10 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
                 const largest = await rpc("getTokenLargestAccounts", [lpMint]);
                 const lpHolders = largest?.value ?? [];
                 let burnedAmt = 0; let lockedAmt = 0; let lockerName = null;
-                for (const h of lpHolders.slice(0, 5)) {
-                  await sleep(DELAY_MS);
-                  const lpOwner = await getTokenAcctOwner(h.address);
+                const _lpSlice4  = lpHolders.slice(0, 5);
+                const _lpOwners4 = await getTokenAcctOwnerBatch(_lpSlice4.map((h) => h.address));
+                for (let _j = 0; _j < _lpSlice4.length; _j++) {
+                  const h = _lpSlice4[_j]; const lpOwner = _lpOwners4[_j];
                   if (lpOwner === NULL_ADDR) {
                     burnedAmt += parseInt(h.amount ?? "0");
                   } else if (KNOWN_LOCKER_PROGRAMS.has(lpOwner)) {
