@@ -5,6 +5,7 @@
  */
 
 import { createWriteStream } from "fs";
+import { createHash } from "crypto";
 
 // ── Detect CLI vs module mode ──────────────────────────────────────────────
 const IS_CLI = process.argv[1]?.endsWith("index.js");
@@ -594,6 +595,120 @@ async function traceChain(start, maxDepth) {
   return chain;
 }
 
+// ── Metaplex on-chain metadata (Stage 3 fallback) ──────────────────────────
+// Pure-Node implementation: no @solana/web3.js required.
+
+const _B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function _b58ToBytes(str) {
+  let num = 0n;
+  for (const c of str) {
+    const i = _B58.indexOf(c);
+    if (i < 0) throw new Error(`Bad base58 char: ${c}`);
+    num = num * 58n + BigInt(i);
+  }
+  const out = [];
+  while (num > 0n) { out.unshift(Number(num & 0xffn)); num >>= 8n; }
+  let leading = 0;
+  for (const c of str) { if (c === "1") leading++; else break; }
+  return Buffer.from([...new Array(leading).fill(0), ...out]);
+}
+
+function _bytesToB58(bytes) {
+  let num = 0n;
+  for (const b of bytes) num = num * 256n + BigInt(b);
+  if (num === 0n) return "1";
+  let out = "";
+  while (num > 0n) { out = _B58[Number(num % 58n)] + out; num /= 58n; }
+  for (const b of bytes) { if (b === 0) out = "1" + out; else break; }
+  return out;
+}
+
+// ed25519 curve constants
+const _P  = (1n << 255n) - 19n;
+const _D  = 37095705934669439343138083508754565189542113879843219016388785533085940283555n;
+
+function _modPow(b, e, m) {
+  let r = 1n; b %= m;
+  while (e > 0n) { if (e & 1n) r = r * b % m; e >>= 1n; b = b * b % m; }
+  return r;
+}
+
+// Returns true if `bytes` (32-byte Buffer) is a valid compressed Edwards Y point.
+// Used to disqualify hashes that land on the curve (those cannot be PDAs).
+function _isOnCurve(bytes) {
+  let y = 0n;
+  for (let i = 0; i < 32; i++) y |= BigInt(bytes[i]) << (BigInt(i) * 8n);
+  y &= ~(1n << 255n);                           // strip sign bit → y coordinate
+  const y2 = y * y % _P;
+  const u  = (y2 + _P - 1n) % _P;              // y² - 1
+  const v  = (_D * y2 % _P + 1n) % _P;         // dy² + 1
+  if (v === 0n) return false;
+  const x2 = u * _modPow(v, _P - 2n, _P) % _P; // x² = u/v
+  if (x2 === 0n) return true;
+  return _modPow(x2, (_P - 1n) / 2n, _P) === 1n; // QR test
+}
+
+const _META_PROGRAM = _b58ToBytes("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+const _PDA_MARKER   = Buffer.from("ProgramDerivedAddress");
+
+// Derives the Metaplex Token Metadata PDA for `mint` (base58 string).
+// Returns the PDA as a base58 string.
+function _findMetadataPda(mint) {
+  const mintBytes = _b58ToBytes(mint);
+  const prefix    = Buffer.from("metadata");
+  for (let nonce = 255; nonce >= 0; nonce--) {
+    const hash = createHash("sha256")
+      .update(prefix)
+      .update(_META_PROGRAM)
+      .update(mintBytes)
+      .update(Buffer.from([nonce]))
+      .update(_META_PROGRAM)
+      .update(_PDA_MARKER)
+      .digest();
+    if (!_isOnCurve(hash)) return _bytesToB58(hash);
+  }
+  throw new Error("PDA nonce exhausted");
+}
+
+// Borsh/Metaplex buffer layout:
+//   1  byte  — key
+//  32  bytes — update_authority
+//  32  bytes — mint
+//   4  bytes — name length (LE u32), then <len> bytes (null-padded)
+//   4  bytes — symbol length (LE u32), then <len> bytes (null-padded)
+function _parseMetaplexBuffer(buf) {
+  if (buf.length < 69) return { name: null, symbol: null };
+  let off = 65; // skip key(1) + update_authority(32) + mint(32)
+  if (off + 4 > buf.length) return { name: null, symbol: null };
+  const nameLen = buf.readUInt32LE(off); off += 4;
+  if (off + nameLen > buf.length) return { name: null, symbol: null };
+  const name = buf.subarray(off, off + nameLen).toString("utf8")
+    .replace(/\0+/g, "").trim();
+  off += nameLen;
+  if (off + 4 > buf.length) return { name: name || null, symbol: null };
+  const symLen = buf.readUInt32LE(off); off += 4;
+  if (off + symLen > buf.length) return { name: name || null, symbol: null };
+  const symbol = buf.subarray(off, off + symLen).toString("utf8")
+    .replace(/\0+/g, "").trim();
+  return { name: name || null, symbol: symbol || null };
+}
+
+// Stage 3: fetch name/symbol directly from the Metaplex metadata PDA.
+// Returns { name, symbol } (either or both may be null if the PDA is absent).
+async function getOnChainMetadata(mint) {
+  try {
+    const pda  = _findMetadataPda(mint);
+    const resp = await rpc("getAccountInfo", [pda, { encoding: "base64" }]);
+    const info = resp?.value;
+    if (!info) return { name: null, symbol: null };
+    const buf  = Buffer.from(info.data[0], "base64");
+    return _parseMetaplexBuffer(buf);
+  } catch {
+    return { name: null, symbol: null };
+  }
+}
+
 async function getTokenMetadata(mint) {
   return getCached(`metadata:${mint}`, TTL_24H, async () => {
     // ── Primary: Helius DAS getAsset ────────────────────────────────────────
@@ -623,7 +738,7 @@ async function getTokenMetadata(mint) {
         null;
     } catch { /* fall through to Pump.fun */ }
 
-    // ── Fallback: Pump.fun coin data ────────────────────────────────────────
+    // ── Stage 2: Pump.fun coin data ─────────────────────────────────────────
     // DAS indexing can lag by several seconds for brand-new mints.
     // Pump.fun stores name/symbol immediately on launch, so this covers the gap.
     if (!name) {
@@ -639,6 +754,16 @@ async function getTokenMetadata(mint) {
           if (!logoUri) logoUri = pf?.image_uri ?? pf?.uri ?? null;
         }
       } catch { /* non-fatal */ }
+    }
+
+    // ── Stage 3: On-chain Metaplex metadata PDA ──────────────────────────────
+    // Emergency fallback: parse name/symbol directly from the on-chain account
+    // buffer. Covers tokens not indexed by DAS and not on Pump.fun (e.g. older
+    // SPL tokens, tokens on graduated AMMs, or fresh mints before indexing).
+    if (!name) {
+      const onChain = await getOnChainMetadata(mint);
+      if (onChain.name)   name   = onChain.name;
+      if (onChain.symbol) symbol = onChain.symbol;
     }
 
     return { name, symbol, logoUri };
