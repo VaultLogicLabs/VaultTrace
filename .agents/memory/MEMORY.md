@@ -1,0 +1,1 @@
+- [VaultTrace audit findings](vaulttrace-audit.md) — 7 confirmed bugs fixed in index.js; null/MISS, timeouts, LP TTL, metadata sanitization

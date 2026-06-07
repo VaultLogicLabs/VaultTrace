@@ -305,13 +305,23 @@ async function getCached(key, ttl, fn) {
 // Short TTL: price data changes frequently and the results page auto-refreshes
 // every 60s, so we keep the cache below that interval to ensure each refresh
 // pulls a genuinely fresh quote while still absorbing duplicate concurrent hits.
-const TTL_30S = 30_000;
+const TTL_30S  =     30_000;
+const TTL_5MIN =  5 * 60_000; // for metadata not yet indexed — retry sooner
+
+// LP status cache TTL: only truly irreversible states warrant 7 days.
+// Mutable states (unlocked, partially_locked, bonding_curve, found_external)
+// use 6 h so a status change (e.g. deployer burns LP next day) is visible
+// the same day rather than persisting as a false "safe" signal for a week.
+function _lpCacheTtl(status) {
+  return (status === "burned" || status === "locked") ? TTL_7D : TTL_6H;
+}
 
 export async function getTokenPrice(mint) {
   return getCached(`price:${mint}`, TTL_30S, async () => {
     try {
       const res = await fetch(
         `https://api.dexscreener.com/latest/dex/tokens/${mint}`,
+        { signal: AbortSignal.timeout(8_000) },
       );
       if (!res.ok) return { price: null, marketCap: null, volume24h: null };
       const json = await res.json();
@@ -343,6 +353,7 @@ export async function getDexScreenerPair(mint) {
     try {
       const res = await fetch(
         `https://api.dexscreener.com/latest/dex/tokens/${mint}`,
+        { signal: AbortSignal.timeout(8_000) },
       );
       if (!res.ok) return null;
       const json = await res.json();
@@ -396,7 +407,7 @@ export async function getTokenChart(mint) {
       const hourRes = await fetch(
         `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pair.pairAddress}/ohlcv/hour` +
         `?aggregate=1&limit=24`,
-        { headers: GT_HEADERS },
+        { headers: GT_HEADERS, signal: AbortSignal.timeout(8_000) },
       );
       if (!hourRes.ok) return { candles: [], direction: null, priceChange24h: null };
       const hourJson = await hourRes.json();
@@ -410,7 +421,7 @@ export async function getTokenChart(mint) {
       const minRes = await fetch(
         `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pair.pairAddress}/ohlcv/minute` +
         `?aggregate=1&limit=60`,
-        { headers: GT_HEADERS },
+        { headers: GT_HEADERS, signal: AbortSignal.timeout(8_000) },
       );
       if (!minRes.ok) {
         // Return the sparse hourly data rather than nothing
@@ -453,6 +464,9 @@ async function rpc(method, params) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: "scanner", method, params }),
+        // 15 s hard ceiling: the retry loop handles HTTP 429 but NOT hung TCP
+        // connections; without this an unresponsive RPC blocks a scan forever.
+        signal: AbortSignal.timeout(15_000),
       });
     } catch (networkErr) {
       if (attempt === MAX_RETRIES) throw networkErr;
@@ -575,14 +589,19 @@ async function getTokenAcctOwner(tokenAcct) {
 // single-address lookups are cache-hits.  Returns an array aligned with addrs.
 async function getTokenAcctOwnerBatch(addrs) {
   if (!addrs.length) return [];
+  // Use a per-call Symbol so `null` (a valid cached value for a closed/non-SPL
+  // account whose owner is genuinely null) is never confused with a cache miss.
+  // Bug without this: every closed-account address re-fetches from RPC on every
+  // call because `v === null` was the miss test, defeating the cache entirely.
+  const MISS = Symbol("miss");
   const owners = addrs.map((a) => {
     const hit = cacheGet(`owner:${a}`);
-    return hit !== undefined ? hit : null;        // undefined = cache miss
+    return hit !== undefined ? hit : MISS;
   });
   const missingIdxs = owners
-    .map((v, i) => (v === null ? i : -1))
+    .map((v, i) => (v === MISS ? i : -1))
     .filter((i) => i >= 0);
-  if (!missingIdxs.length) return owners;
+  if (!missingIdxs.length) return owners.map((v) => (v === MISS ? null : v));
   try {
     const infos = await rpc("getMultipleAccounts", [
       missingIdxs.map((i) => addrs[i]),
@@ -595,7 +614,7 @@ async function getTokenAcctOwnerBatch(addrs) {
       cacheSet(`owner:${addrs[idx]}`, owner, TTL_24H);
     });
   } catch { /* non-fatal — null owners handled by callers */ }
-  return owners;
+  return owners.map((v) => (v === MISS ? null : v));
 }
 
 async function getFirstAcquisition(tokenAcct) {
@@ -738,8 +757,16 @@ async function getOnChainMetadata(mint) {
 }
 
 async function getTokenMetadata(mint) {
-  return getCached(`metadata:${mint}`, TTL_24H, async () => {
-    // ── Primary: Helius DAS getAsset ────────────────────────────────────────
+  // Manual cache + in-flight deduplication instead of getCached() so we can
+  // apply a shorter TTL when all 3 stages fail — a token not yet indexed by
+  // DAS should be re-checked in 5 min rather than locked as "Unknown" for 24 h.
+  const key = `metadata:${mint}`;
+  const hit = cacheGet(key);
+  if (hit !== undefined) return hit;
+  if (IN_FLIGHT.has(key)) return IN_FLIGHT.get(key);
+
+  const promise = (async () => {
+    // ── Stage 1: Helius DAS getAsset ────────────────────────────────────────
     let name = null, symbol = null, logoUri = null;
     try {
       const res = await fetch(RPC_URL, {
@@ -751,14 +778,20 @@ async function getTokenMetadata(mint) {
           method: "getAsset",
           params: { id: mint },
         }),
+        // Hard ceiling: a hung DAS connection blocks every concurrent caller
+        // waiting on the same IN_FLIGHT promise, stalling the entire scan.
+        signal: AbortSignal.timeout(12_000),
       });
       const json = await res.json();
       const asset = json.result ?? {};
       const meta  = asset.content?.metadata ?? {};
       const links = asset.content?.links    ?? {};
       const files = asset.content?.files    ?? [];
-      name    = meta.name   ?? null;
-      symbol  = meta.symbol ?? null;
+      // trim() + falsy-check: DAS sometimes returns "" or "  " which are truthy
+      // strings and would incorrectly suppress the Pump.fun and PDA fallbacks,
+      // leaving the UI with a blank or whitespace-only token name.
+      name    = meta.name?.trim()   || null;
+      symbol  = meta.symbol?.trim() || null;
       logoUri =
         links.image ??
         files.find((f) => f.cdn_uri || f.uri)?.cdn_uri ??
@@ -777,8 +810,8 @@ async function getTokenMetadata(mint) {
         );
         if (pfRes.ok) {
           const pf = await pfRes.json();
-          name    = pf?.name   ?? null;
-          symbol  = pf?.symbol ?? null;
+          name    = pf?.name?.trim()   || null;
+          symbol  = pf?.symbol?.trim() || null;
           if (!logoUri) logoUri = pf?.image_uri ?? pf?.uri ?? null;
         }
       } catch { /* non-fatal */ }
@@ -794,8 +827,16 @@ async function getTokenMetadata(mint) {
       if (onChain.symbol) symbol = onChain.symbol;
     }
 
-    return { name, symbol, logoUri };
-  });
+    const result = { name, symbol, logoUri };
+    // Cache for 24 h when a name was resolved.  When all 3 stages failed the
+    // token is likely not yet indexed — cache for only 5 min so the next scan
+    // (or an auto-refresh) picks up the real metadata once indexing catches up.
+    cacheSet(key, result, name ? TTL_24H : TTL_5MIN);
+    return result;
+  })().finally(() => IN_FLIGHT.delete(key));
+
+  IN_FLIGHT.set(key, promise);
+  return promise;
 }
 
 async function getMintAuthority(mint) {
@@ -915,7 +956,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
         result.burned = true;
         result.burnedPct = 100;
         result.status = "burned";
-        cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+        cacheSet(`lpStatus:${mint}`, result, _lpCacheTtl(result.status));
         return result;
       }
 
@@ -956,7 +997,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
               : "unlocked";
         if (result.status === "unlocked") result.lpOwnerWallet = firstLpOwner;
       }
-      cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+      cacheSet(`lpStatus:${mint}`, result, _lpCacheTtl(result.status));
       return result;
     }
 
@@ -985,7 +1026,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
         if (dsPair.dexId) result.poolType = dsPair.dexId;
       }
     } catch { /* non-fatal */ }
-    cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+    cacheSet(`lpStatus:${mint}`, result, _lpCacheTtl(result.status));
     return result;
   }
 
@@ -1034,7 +1075,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
 
     if (lpSupply2 === 0) {
       result.burned = true; result.burnedPct = 100; result.status = "burned";
-      cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+      cacheSet(`lpStatus:${mint}`, result, _lpCacheTtl(result.status));
       return result;
     }
 
@@ -1069,7 +1110,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
         :                          "unlocked";
       if (result.status === "unlocked") result.lpOwnerWallet = firstLpOwner2;
     }
-    cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+    cacheSet(`lpStatus:${mint}`, result, _lpCacheTtl(result.status));
     return result;
   }
 
@@ -1102,7 +1143,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
 
         if (lpSupply3 === 0) {
           result.burned = true; result.burnedPct = 100; result.status = "burned";
-          cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+          cacheSet(`lpStatus:${mint}`, result, _lpCacheTtl(result.status));
           return result;
         }
 
@@ -1138,7 +1179,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
             :                          "unlocked";
           if (result.status === "unlocked") result.lpOwnerWallet = firstLpOwner3;
         }
-        cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+        cacheSet(`lpStatus:${mint}`, result, _lpCacheTtl(result.status));
         return result;
       }
     }
@@ -1157,7 +1198,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
         if (dsPair.dexId) result.poolType = dsPair.dexId;
       }
     } catch { /* non-fatal */ }
-    cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+    cacheSet(`lpStatus:${mint}`, result, _lpCacheTtl(result.status));
     return result;
   }
 
@@ -1177,7 +1218,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
     if (hasPump && !hasAMM) {
       result.poolType = "pumpfun";
       result.status   = "bonding_curve";
-      cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+      cacheSet(`lpStatus:${mint}`, result, _lpCacheTtl(result.status));
       return result;
     }
   }
@@ -1280,7 +1321,7 @@ async function getLpStatus(mint, mintSigs, holderRows = []) {
       } catch { /* non-fatal — surface whatever partial data we have */ }
     }
 
-    cacheSet(`lpStatus:${mint}`, result, TTL_7D);
+    cacheSet(`lpStatus:${mint}`, result, _lpCacheTtl(result.status));
     return result;
   }
 
@@ -1304,7 +1345,10 @@ async function getDeployerHistory(creatorAddress, currentMint) {
       const sigs =
         (await rpc("getSignaturesForAddress", [creatorAddress, { limit: 100 }])) ?? [];
 
-      // Fetch txs in parallel batches of 8 to bound latency
+      // Fetch txs in parallel batches of 8 to bound latency.
+      // Sleep DELAY_MS between batches: without it, 100 sigs → 13 successive
+      // bursts of 8 concurrent getTx calls with no throttle, reliably hitting
+      // the RPC rate-limit and triggering 429 cascades on fresh scans.
       for (let i = 0; i < sigs.length; i += 8) {
         const batch = sigs.slice(i, i + 8);
         await Promise.all(
@@ -1331,6 +1375,7 @@ async function getDeployerHistory(creatorAddress, currentMint) {
             } catch { /* non-fatal */ }
           }),
         );
+        if (i + 8 < sigs.length) await sleep(DELAY_MS);
       }
     } catch { /* non-fatal */ }
 
@@ -1362,6 +1407,7 @@ async function getDeployerHistory(creatorAddress, currentMint) {
         try {
           const res = await fetch(
             `https://api.dexscreener.com/latest/dex/tokens/${mint}`,
+            { signal: AbortSignal.timeout(8_000) },
           );
           const json = res.ok ? await res.json() : null;
           const pairs = (json?.pairs ?? []).filter((p) => p.chainId === "solana");
